@@ -120,6 +120,7 @@ export interface Group {
 
 export interface GroupStats {
   group_id: number;
+  group_name?: string; // Added
   topics_count: number;
   users_count: number;
   latest_topic_time?: string;
@@ -127,6 +128,11 @@ export interface GroupStats {
   total_likes: number;
   total_comments: number;
   total_readings: number;
+  total_topics?: number; // Added
+  total_mentions?: number; // Added
+  unique_stocks?: number; // Added
+  latest_topic?: string; // Added
+  win_rate?: number; // Added
 }
 export interface Account {
   id: string;
@@ -826,17 +832,58 @@ class ApiClient {
     return this.request('/api/global/stats');
   }
 
-  async getGlobalWinRate(minMentions: number = 2, returnPeriod: string = 'return_5d', limit: number = 50): Promise<any> {
+  async getGlobalWinRate(
+    minMentions: number = 2,
+    returnPeriod: string = 'return_5d',
+    limit: number = 1000,
+    startDate?: string,
+    sortBy: string = 'win_rate',
+    order: string = 'desc',
+    page: number = 1,
+    pageSize: number = 20
+  ): Promise<WinRateResponse> {
     const params = new URLSearchParams({
       min_mentions: String(minMentions),
       return_period: returnPeriod,
       limit: String(limit),
+      sort_by: sortBy,
+      order: order,
+      page: String(page),
+      page_size: String(pageSize),
     });
-    return this.request(`/api/global/win-rate?${params.toString()}`);
+    if (startDate) {
+      params.append('start_date', startDate);
+    }
+    const res = await this.request(`/api/global/win-rate?${params.toString()}`);
+
+    // New format: { data: [...], total: N, ... }
+    if (res.data && typeof res.total === 'number') {
+      return res as WinRateResponse;
+    }
+
+    // Fallback for old format (if any): [item1, item2, ...]
+    if (Array.isArray(res)) {
+      return { data: res, total: res.length, page: 1, page_size: res.length };
+    }
+
+    // Just in case
+    return { data: [], total: 0, page: 1, page_size: pageSize };
   }
 
-  async getGlobalSectorHeat(): Promise<any> {
-    return this.request('/api/global/sector-heat');
+  async getGlobalStockEvents(stockCode: string): Promise<any> {
+    return this.request(`/api/global/stock/${stockCode}/events`);
+  }
+
+  async getGlobalSectorHeat(startDate?: string): Promise<any> {
+    const params = new URLSearchParams();
+    if (startDate) {
+      params.append('start_date', startDate);
+    }
+    return this.request(`/api/global/sector-heat?${params.toString()}`);
+  }
+
+  async triggerManualAnalysis(): Promise<any> {
+    return this.request('/api/scheduler/analyze', { method: 'POST' });
   }
 
   async getGlobalSignals(lookbackDays: number = 7, minMentions: number = 2): Promise<any> {
@@ -859,6 +906,10 @@ class ApiClient {
 
   async stopScheduler(): Promise<any> {
     return this.request('/api/scheduler/stop', { method: 'POST' });
+  }
+
+  async stopManualAnalysis(): Promise<any> {
+    return this.request('/api/scheduler/stop_analysis', { method: 'POST' });
   }
 
   async updateSchedulerConfig(config: Record<string, any>): Promise<any> {

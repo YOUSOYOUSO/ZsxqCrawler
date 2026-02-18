@@ -108,13 +108,16 @@ export default function TaskLogViewer({
 
   // 监听状态变化，确保任务完成时关闭连接
   useEffect(() => {
-    if ((status === 'completed' || status === 'failed' || status === 'cancelled') && eventSourceRef.current) {
+    const isTerminal = status === 'completed' || status === 'failed';
+    const isCancelledNormalTask = status === 'cancelled' && taskId !== 'scheduler';
+
+    if ((isTerminal || isCancelledNormalTask) && eventSourceRef.current) {
       console.log(`状态变为${status}，确保SSE连接已关闭`);
       eventSourceRef.current.close();
       eventSourceRef.current = null;
       setIsConnected(false);
     }
-  }, [status]);
+  }, [status, taskId]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -137,9 +140,12 @@ export default function TaskLogViewer({
       case 'pending':
         return 'bg-gradient-to-r from-amber-100 to-yellow-100 text-amber-800 border border-amber-200';
       case 'idle':
-        return 'bg-gradient-to-r from-gray-100 to-slate-100 text-gray-600 border border-gray-300';
+        return 'bg-gradient-to-r from-slate-100 to-gray-100 text-slate-600 border border-slate-200';
+      case 'stopped':
+      case 'cancelled':
+        return 'bg-gradient-to-r from-gray-100 to-slate-100 text-gray-500 border border-gray-300';
       default:
-        return 'bg-gradient-to-r from-gray-100 to-slate-100 text-gray-800 border border-gray-200';
+        return 'bg-gradient-to-r from-gray-50 to-slate-50 text-gray-700 border border-gray-100';
     }
   };
 
@@ -148,11 +154,17 @@ export default function TaskLogViewer({
       case 'completed':
         return '已完成';
       case 'running':
-        return '运行中';
+        return '正在运行';
       case 'failed':
-        return '失败';
+        return '执行失败';
       case 'pending':
         return '等待中';
+      case 'cancelled':
+        return '已取消';
+      case 'stopped':
+        return '已停止';
+      case 'idle':
+        return '空闲';
       default:
         return status;
     }

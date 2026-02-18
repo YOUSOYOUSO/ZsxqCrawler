@@ -9,6 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import Link from 'next/link';
+import { BarChart3, Clock, Loader2, Zap, Target, Flame, Activity, AlertTriangle } from 'lucide-react';
+import TaskLogViewer from '@/components/TaskLogViewer';
 
 /* =========================================================
    Types
@@ -49,14 +51,18 @@ interface SignalItem {
 
 interface GroupOverview {
     group_id: string;
+    group_name: string;
     total_topics: number;
     total_mentions: number;
     unique_stocks: number;
     latest_topic: string;
+    win_rate: number;
 }
 
 interface SchedulerStatus {
     state: string;
+    is_crawling: boolean;
+    is_calculating: boolean;
     crawl_rounds: number;
     calc_rounds: number;
     last_crawl: string | null;
@@ -133,22 +139,64 @@ export default function DashboardPage() {
     const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [returnPeriod, setReturnPeriod] = useState('return_5d');
+    const [startDate, setStartDate] = useState('30'); // Default 30 days
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(20);
+    const [total, setTotal] = useState(0);
+    const [sortBy, setSortBy] = useState('win_rate');
+    const [sortOrder, setSortOrder] = useState('desc');
+    const [winRateLoading, setWinRateLoading] = useState(false);
+
     const [schedulerLoading, setSchedulerLoading] = useState(false);
+    const [analyzing, setAnalyzing] = useState(false);
+    const [selectedStock, setSelectedStock] = useState<string | null>(null);
+    const [stockEvents, setStockEvents] = useState<any[]>([]);
+    const [eventsLoading, setEventsLoading] = useState(false);
+    const [showLogs, setShowLogs] = useState(false);
 
     // --- fetch helpers ---
+
+    const getDateFilter = useCallback(() => {
+        if (startDate === 'all') return undefined;
+        const d = new Date();
+        d.setDate(d.getDate() - parseInt(startDate));
+        return d.toISOString().split('T')[0];
+    }, [startDate]);
+
+    const fetchWinRate = useCallback(async () => {
+        setWinRateLoading(true);
+        try {
+            const dateStr = getDateFilter();
+            const res = await apiClient.getGlobalWinRate(
+                2, returnPeriod, 1000, dateStr, sortBy, sortOrder, page, pageSize
+            );
+            if (res) {
+                setWinRate(res.data || []);
+                setTotal(res.total || 0);
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setWinRateLoading(false);
+        }
+    }, [returnPeriod, startDate, sortBy, sortOrder, page, pageSize, getDateFilter]);
+
     const fetchAll = useCallback(async () => {
         setLoading(true);
         try {
-            const [s, w, sc, sg, g, sch] = await Promise.allSettled([
+            const dateStr = getDateFilter();
+            const [s, sc, sg, g, sch] = await Promise.allSettled([
                 apiClient.getGlobalStats(),
-                apiClient.getGlobalWinRate(2, returnPeriod, 30),
-                apiClient.getGlobalSectorHeat(),
+                apiClient.getGlobalSectorHeat(dateStr),
                 apiClient.getGlobalSignals(7, 2),
                 apiClient.getGlobalGroups(),
                 apiClient.getSchedulerStatus(),
             ]);
+
+            // Win rate is fetched separately to support pagination/sorting/filtering without reloading everything
+            await fetchWinRate();
+
             if (s.status === 'fulfilled') setStats(s.value);
-            if (w.status === 'fulfilled') setWinRate(Array.isArray(w.value) ? w.value : w.value?.data ?? []);
             if (sc.status === 'fulfilled') setSectors(Array.isArray(sc.value) ? sc.value : sc.value?.data ?? []);
             if (sg.status === 'fulfilled') setSignals(Array.isArray(sg.value) ? sg.value : sg.value?.data ?? []);
             if (g.status === 'fulfilled') setGroups(Array.isArray(g.value) ? g.value : g.value?.data ?? []);
@@ -158,18 +206,16 @@ export default function DashboardPage() {
         } finally {
             setLoading(false);
         }
-    }, [returnPeriod]);
+    }, [fetchWinRate, getDateFilter]);
 
     useEffect(() => {
         fetchAll();
     }, [fetchAll]);
 
-    // Refresh win-rate when period selector changes
+    // Refresh win-rate when params change (outside initial load)
     useEffect(() => {
-        apiClient.getGlobalWinRate(2, returnPeriod, 30).then((d) => {
-            setWinRate(Array.isArray(d) ? d : d?.data ?? []);
-        }).catch(() => { });
-    }, [returnPeriod]);
+        fetchWinRate();
+    }, [fetchWinRate]);
 
     const toggleScheduler = async () => {
         if (!scheduler) return;
@@ -179,6 +225,7 @@ export default function DashboardPage() {
                 await apiClient.stopScheduler();
             } else {
                 await apiClient.startScheduler();
+                setShowLogs(true); // 启动时自动显示日志
             }
             const s = await apiClient.getSchedulerStatus();
             setScheduler(s);
@@ -186,6 +233,63 @@ export default function DashboardPage() {
             /* ignore */
         } finally {
             setSchedulerLoading(false);
+        }
+    };
+
+    const handleDataAnalysis = async () => {
+        if (scheduler?.is_calculating) {
+            setSchedulerLoading(true);
+            try {
+                await apiClient.stopManualAnalysis();
+                // Wait briefly for state change
+                setTimeout(async () => {
+                    const s = await apiClient.getSchedulerStatus();
+                    setScheduler(s);
+                    setSchedulerLoading(false);
+                }, 1000);
+            } catch (e) {
+                console.error(e);
+                setSchedulerLoading(false);
+            }
+            return;
+        }
+
+        setAnalyzing(true);
+        setShowLogs(true);
+        try {
+            await apiClient.triggerManualAnalysis();
+            // Wait and refresh
+            setTimeout(async () => {
+                const s = await apiClient.getSchedulerStatus();
+                setScheduler(s);
+                setAnalyzing(false);
+            }, 1500);
+        } catch {
+            setAnalyzing(false);
+        }
+    };
+
+    const openStockDetail = async (code: string) => {
+        setSelectedStock(code);
+        setEventsLoading(true);
+        try {
+            // 使用全局事件接口
+            const data = await apiClient.getGlobalStockEvents(code);
+            setStockEvents(data.events || []);
+        } catch (error) {
+            console.error('获取股票事件失败:', error);
+            setStockEvents([]);
+        } finally {
+            setEventsLoading(false);
+        }
+    };
+
+    const handleSort = (column: string) => {
+        if (sortBy === column) {
+            setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSortBy(column);
+            setSortOrder('desc');
         }
     };
 
@@ -219,25 +323,51 @@ export default function DashboardPage() {
                             🔄 刷新
                         </Button>
                         {scheduler && (
-                            <Button
-                                variant={scheduler.state === 'running' ? 'destructive' : 'default'}
-                                size="sm"
-                                onClick={toggleScheduler}
-                                disabled={schedulerLoading}
-                                className="gap-1.5 min-w-[120px]"
-                            >
-                                {schedulerLoading ? (
-                                    <span className="animate-spin">⏳</span>
-                                ) : scheduler.state === 'running' ? (
-                                    '⏹ 停止调度'
-                                ) : (
-                                    '▶ 启动调度'
-                                )}
-                            </Button>
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setShowLogs(!showLogs)}
+                                    className={`gap-1.5 ${showLogs ? 'bg-primary/10 text-primary border-primary/30' : ''}`}
+                                >
+                                    📜 日志
+                                </Button>
+
+                                <Button
+                                    variant={scheduler.is_calculating ? 'destructive' : 'outline'}
+                                    size="sm"
+                                    onClick={handleDataAnalysis}
+                                    disabled={analyzing || schedulerLoading}
+                                    className="gap-1.5 min-w-[100px]"
+                                >
+                                    {analyzing ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : scheduler.is_calculating ? (
+                                        '⏹ 停止分析'
+                                    ) : (
+                                        '📊 数据分析'
+                                    )}
+                                </Button>
+                                <Button
+                                    variant={scheduler.state === 'running' ? 'destructive' : 'default'}
+                                    size="sm"
+                                    onClick={toggleScheduler}
+                                    disabled={schedulerLoading}
+                                    className="gap-1.5 min-w-[120px]"
+                                >
+                                    {schedulerLoading ? (
+                                        <span className="animate-spin">⏳</span>
+                                    ) : scheduler.state === 'running' ? (
+                                        '⏹ 停止调度'
+                                    ) : (
+                                        '▶ 启动调度'
+                                    )}
+                                </Button>
+                            </div>
                         )}
                     </div>
                 </div>
-            </header>
+            </header >
 
             <main className="mx-auto max-w-7xl px-6 py-6 space-y-6">
                 {/* ---- Stats Row ---- */}
@@ -249,33 +379,73 @@ export default function DashboardPage() {
                     <StatCard label="收益记录" value={stats?.performance_records?.toLocaleString() ?? '0'} icon="📊" color="rose" />
                 </div>
 
-                {/* ---- Scheduler Status Bar ---- */}
-                {scheduler && (
+                {/* ---- Scheduler Logs ---- */}
+                {showLogs && (
+                    <div className="space-y-4 animate-in fade-in slide-in-from-top-4 duration-500">
+                        {/* Compact Status Header above logs */}
+                        <div className="flex items-center justify-between px-2">
+                            <div className="flex items-center gap-3">
+                                <Badge
+                                    variant={scheduler?.state === 'running' ? 'default' : 'secondary'}
+                                    className={`text-xs px-2.5 py-1 ${scheduler?.state === 'running' ? 'bg-blue-500 animate-pulse' : ''}`}
+                                >
+                                    调度循环: {scheduler?.state === 'running' ? '运行中' : '已停止'}
+                                </Badge>
+                                <Badge
+                                    variant={scheduler?.is_calculating || analyzing ? 'default' : 'secondary'}
+                                    className={`text-xs px-2.5 py-1 ${(scheduler?.is_calculating || analyzing) ? 'bg-indigo-500 animate-pulse' : ''}`}
+                                >
+                                    数据分析: {(scheduler?.is_calculating || analyzing) ? '运行中' : '空闲'}
+                                </Badge>
+                                {scheduler?.current_group && (
+                                    <div className="flex items-center gap-2 text-xs text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 shadow-sm animate-in zoom-in-95 duration-300">
+                                        <Activity className="w-3.5 h-3.5" />
+                                        <span className="opacity-70 font-medium">当前处理中</span>
+                                        <span className="font-bold">{scheduler.current_group}</span>
+                                    </div>
+                                )}
+                            </div>
+                            <Button variant="ghost" size="sm" onClick={() => setShowLogs(false)} className="h-8 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all">
+                                收起日志
+                            </Button>
+                        </div>
+                        <div className="h-[480px]">
+                            <TaskLogViewer
+                                taskId="scheduler"
+                                onClose={() => setShowLogs(false)}
+                                inline={true}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* ---- Scheduler Status Bar (mini) ---- */}
+                {scheduler && !showLogs && (
                     <Card className="border border-border/60 bg-card/50 backdrop-blur-sm">
                         <CardContent className="p-4">
                             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
                                 <div className="flex items-center gap-2">
-                                    <span className={`h-2.5 w-2.5 rounded-full ${scheduler.state === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground'}`} />
-                                    <span className="font-medium">调度器</span>
-                                    <Badge variant={scheduler.state === 'running' ? 'default' : 'secondary'} className="text-xs">
-                                        {scheduler.state === 'running' ? '运行中' : scheduler.state === 'stopped' ? '已停止' : scheduler.state}
+                                    <span className={`h-2 w-2 rounded-full ${scheduler.state === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground'}`} />
+                                    <span className="font-medium text-xs">自动采集调度器</span>
+                                    <Badge variant={scheduler.state === 'running' ? 'default' : 'secondary'} className="text-[10px] px-1.5 py-0">
+                                        {scheduler.state === 'running' ? '运行中' : '已停止'}
                                     </Badge>
                                 </div>
-                                <span className="text-muted-foreground">爬取轮次 <strong>{scheduler.crawl_rounds}</strong></span>
-                                <span className="text-muted-foreground">计算轮次 <strong>{scheduler.calc_rounds}</strong></span>
                                 {scheduler.current_group && (
-                                    <span className="text-muted-foreground">
-                                        当前群组 <Badge variant="outline" className="ml-1 text-xs">{scheduler.current_group}</Badge>
+                                    <span className="text-muted-foreground text-xs flex items-center gap-1.5">
+                                        <Activity className="w-3 h-3 opacity-50" />
+                                        当前处理 <span className="text-foreground font-medium">{scheduler.current_group}</span>
                                     </span>
                                 )}
                                 {scheduler.errors_total > 0 && (
-                                    <span className="text-red-500">错误 <strong>{scheduler.errors_total}</strong></span>
-                                )}
-                                {scheduler.last_crawl && (
-                                    <span className="text-muted-foreground text-xs">
-                                        上次爬取 {new Date(scheduler.last_crawl).toLocaleTimeString()}
+                                    <span className="text-red-500 text-xs flex items-center gap-1">
+                                        <AlertTriangle className="w-3 h-3" />
+                                        错误 <strong>{scheduler.errors_total}</strong>
                                     </span>
                                 )}
+                                <Button variant="ghost" size="sm" onClick={() => setShowLogs(true)} className="ml-auto text-xs h-7 px-3 bg-muted/30 hover:bg-muted/60 border border-border/20">
+                                    查看运行日志
+                                </Button>
                             </div>
                         </CardContent>
                     </Card>
@@ -292,36 +462,83 @@ export default function DashboardPage() {
 
                     {/* --- Win Rate Tab --- */}
                     <TabsContent value="winrate" className="space-y-4">
-                        <div className="flex items-center gap-3">
-                            <Select value={returnPeriod} onValueChange={setReturnPeriod}>
-                                <SelectTrigger className="w-[160px]">
-                                    <SelectValue placeholder="收益周期" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="return_1d">T+1 日</SelectItem>
-                                    <SelectItem value="return_3d">T+3 日</SelectItem>
-                                    <SelectItem value="return_5d">T+5 日</SelectItem>
-                                    <SelectItem value="return_10d">T+10 日</SelectItem>
-                                    <SelectItem value="return_20d">T+20 日</SelectItem>
-                                    <SelectItem value="return_60d">T+60 日</SelectItem>
-                                    <SelectItem value="return_120d">T+120 日</SelectItem>
-                                    <SelectItem value="return_250d">T+250 日</SelectItem>
-                                </SelectContent>
-                            </Select>
-                            <span className="text-sm text-muted-foreground">Top 30</span>
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                                <Select value={returnPeriod} onValueChange={setReturnPeriod}>
+                                    <SelectTrigger className="w-[140px]">
+                                        <SelectValue placeholder="收益周期" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="return_1d">T+1 日</SelectItem>
+                                        <SelectItem value="return_3d">T+3 日</SelectItem>
+                                        <SelectItem value="return_5d">T+5 日</SelectItem>
+                                        <SelectItem value="return_10d">T+10 日</SelectItem>
+                                        <SelectItem value="return_20d">T+20 日</SelectItem>
+                                    </SelectContent>
+                                </Select>
+
+                                <Select value={startDate} onValueChange={setStartDate}>
+                                    <SelectTrigger className="w-[140px]">
+                                        <SelectValue placeholder="时间范围" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="30">近 30 天</SelectItem>
+                                        <SelectItem value="60">近 60 天</SelectItem>
+                                        <SelectItem value="90">近 90 天</SelectItem>
+                                        <SelectItem value="180">近 180 天</SelectItem>
+                                        <SelectItem value="365">近 1 年</SelectItem>
+                                        <SelectItem value="all">全部时间</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setPage(Math.max(1, page - 1))}
+                                    disabled={page === 1}
+                                >
+                                    上一页
+                                </Button>
+                                <span className="text-sm text-muted-foreground min-w-[60px] text-center">
+                                    {page} / {Math.ceil(total / pageSize) || 1}
+                                </span>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setPage(page + 1)}
+                                    disabled={page * pageSize >= total}
+                                >
+                                    下一页
+                                </Button>
+                            </div>
                         </div>
 
-                        <Card>
+                        <Card className="relative">
+                            {winRateLoading && (
+                                <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-10 backdrop-blur-[1px]">
+                                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                                </div>
+                            )}
                             <CardContent className="p-0">
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-sm">
                                         <thead>
-                                            <tr className="border-b bg-muted/40">
-                                                <th className="px-4 py-3 text-left font-medium text-muted-foreground">#</th>
-                                                <th className="px-4 py-3 text-left font-medium text-muted-foreground">股票</th>
-                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground">提及数</th>
-                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground">胜率</th>
-                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground">平均收益</th>
+                                            <tr className="border-b bg-muted/40 transition-colors">
+                                                <th className="px-4 py-3 text-left font-medium text-muted-foreground w-[60px]">#</th>
+                                                <th className="px-4 py-3 text-left font-medium text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => handleSort('stock_code')}>
+                                                    股票 {sortBy === 'stock_code' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                                </th>
+                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => handleSort('mention_count')}>
+                                                    提及数 {sortBy === 'mention_count' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                                </th>
+                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => handleSort('win_rate')}>
+                                                    胜率 {sortBy === 'win_rate' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                                </th>
+                                                <th className="px-4 py-3 text-right font-medium text-muted-foreground cursor-pointer hover:text-foreground" onClick={() => handleSort('avg_return')}>
+                                                    平均收益 {sortBy === 'avg_return' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                                </th>
                                                 <th className="px-4 py-3 text-right font-medium text-muted-foreground">群组数</th>
                                             </tr>
                                         </thead>
@@ -334,8 +551,12 @@ export default function DashboardPage() {
                                                 </tr>
                                             ) : (
                                                 winRate.map((item, i) => (
-                                                    <tr key={item.stock_code} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
-                                                        <td className="px-4 py-3 font-mono text-muted-foreground">{i + 1}</td>
+                                                    <tr
+                                                        key={item.stock_code}
+                                                        className="border-b last:border-0 hover:bg-muted/30 transition-colors cursor-pointer"
+                                                        onClick={() => openStockDetail(item.stock_code)}
+                                                    >
+                                                        <td className="px-4 py-3 font-mono text-muted-foreground">{(page - 1) * pageSize + i + 1}</td>
                                                         <td className="px-4 py-3">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="font-medium">{item.stock_name || item.stock_code}</span>
@@ -345,9 +566,9 @@ export default function DashboardPage() {
                                                         <td className="px-4 py-3 text-right font-mono">{item.mention_count}</td>
                                                         <td className="px-4 py-3 text-right">
                                                             <div className="flex items-center justify-end gap-2">
-                                                                <Progress value={item.win_rate * 100} className="h-2 w-16" />
+                                                                <Progress value={item.win_rate} className="h-2 w-16" />
                                                                 <span className="font-mono text-xs w-12 text-right">
-                                                                    {(item.win_rate * 100).toFixed(0)}%
+                                                                    {item.win_rate.toFixed(0)}%
                                                                 </span>
                                                             </div>
                                                         </td>
@@ -385,7 +606,7 @@ export default function DashboardPage() {
                                                     <span className="text-xs text-muted-foreground font-mono ml-1">{s.stock_code}</span>
                                                 </span>
                                                 <Badge variant="secondary" className="text-xs">
-                                                    {s.group_count} 群
+                                                    {s.group_count} 个群组提及
                                                 </Badge>
                                             </CardTitle>
                                         </CardHeader>
@@ -462,8 +683,9 @@ export default function DashboardPage() {
                                     >
                                         <Card className="border border-border/60 group-hover:shadow-md group-hover:border-primary/30 transition-all cursor-pointer">
                                             <CardHeader className="pb-2">
-                                                <CardTitle className="text-base flex items-center gap-2">
-                                                    <Badge variant="outline" className="font-mono text-xs">{g.group_id}</Badge>
+                                                <CardTitle className="text-base flex items-center gap-2 justify-between">
+                                                    <span className="truncate" title={g.group_name}>{g.group_name || `群组 ${g.group_id}`}</span>
+                                                    <Badge variant="outline" className="font-mono text-xs shrink-0">{g.group_id}</Badge>
                                                 </CardTitle>
                                             </CardHeader>
                                             <CardContent className="text-sm space-y-1.5">
@@ -493,6 +715,100 @@ export default function DashboardPage() {
                     </TabsContent>
                 </Tabs>
             </main>
-        </div>
+
+            {/* ─── Stock Detail Drawer ─── */}
+            {
+                selectedStock && (
+                    <div className="fixed inset-0 bg-black/40 z-50 flex justify-end" onClick={() => setSelectedStock(null)}>
+                        <div
+                            className="w-full max-w-md bg-background border-l shadow-2xl overflow-auto animate-in slide-in-from-right"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="sticky top-0 bg-background/95 backdrop-blur p-4 border-b flex items-center justify-between">
+                                <h3 className="font-semibold text-sm flex items-center gap-2">
+                                    <BarChart3 className="h-4 w-4" /> 股票事件详情
+                                </h3>
+                                <Button size="sm" variant="ghost" onClick={() => setSelectedStock(null)}>✕</Button>
+                            </div>
+
+                            <div className="p-4 space-y-3">
+                                {eventsLoading ? (
+                                    <div className="flex items-center justify-center py-12">
+                                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                    </div>
+                                ) : stockEvents.length === 0 ? (
+                                    <p className="text-center text-muted-foreground text-sm py-8">暂无事件数据</p>
+                                ) : (
+                                    <>
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <span className="font-semibold">{stockEvents[0]?.stock_name}</span>
+                                            <Badge variant="outline">{selectedStock}</Badge>
+                                            <Badge variant="secondary">{stockEvents.length} 次提及</Badge>
+                                        </div>
+                                        {stockEvents.map((ev: any, idx: number) => (
+                                            <Card key={idx} className="border-border/50">
+                                                <CardContent className="p-3 space-y-2">
+                                                    <div className="flex items-center justify-between text-xs">
+                                                        <span className="text-muted-foreground flex items-center gap-1">
+                                                            <Clock className="h-3 w-3" />
+                                                            {ev.mention_date} {ev.mention_time}
+                                                        </span>
+                                                        {ev.group_name && (
+                                                            <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
+                                                                {ev.group_name}
+                                                            </Badge>
+                                                        )}
+                                                    </div>
+                                                    {ev.context && (
+                                                        <p className="text-xs text-muted-foreground line-clamp-3 bg-muted/30 rounded p-2">
+                                                            {ev.context}
+                                                        </p>
+                                                    )}
+                                                    <div className="grid grid-cols-5 gap-1 text-center text-[10px]">
+                                                        {[
+                                                            { label: 'T+1', val: ev.return_1d, icon: <Zap className="h-2 w-2" /> },
+                                                            { label: 'T+3', val: ev.return_3d, icon: <Target className="h-2 w-2" /> },
+                                                            { label: 'T+5', val: ev.return_5d, icon: <Flame className="h-2 w-2" /> },
+                                                            { label: 'T+10', val: ev.return_10d, icon: <Activity className="h-2 w-2" /> },
+                                                            { label: 'T+20', val: ev.return_20d, icon: <TrendingUp className="h-2 w-2" /> },
+                                                        ].map((p, i) => (
+                                                            <div key={i} className="flex flex-col items-center bg-muted/50 rounded py-1">
+                                                                <span className="text-muted-foreground mb-1">{p.label}</span>
+                                                                <ReturnBadge value={p.val} />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </CardContent>
+                                            </Card>
+                                        ))}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+        </div >
+    );
+}
+
+// 辅助组件：趋势图图标（用于 Drawer）
+function TrendingUp({ className }: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={className}
+        >
+            <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+            <polyline points="17 6 23 6 23 12" />
+        </svg>
     );
 }

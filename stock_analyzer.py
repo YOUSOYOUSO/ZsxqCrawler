@@ -764,13 +764,14 @@ class StockAnalyzer:
             'unique_stocks': len(stocks_found)
         }
 
-    def calc_pending_performance(self, calc_window_days: int = 365) -> Dict[str, Any]:
+    def calc_pending_performance(self, calc_window_days: int = 365, progress_callback=None) -> Dict[str, Any]:
         """
         计算待处理的收益表现（需要网络，供定时任务使用）
         包括：未计算的新提及 + 未完全冻结的旧提及
 
         Args:
             calc_window_days: 活跃计算窗口天数（默认365天，覆盖T+250）
+            progress_callback: 进度回调函数，func(current, total, msg)
         """
         self._build_stock_dictionary()
         since_date = (datetime.now() - timedelta(days=calc_window_days)).strftime('%Y-%m-%d')
@@ -808,16 +809,26 @@ class StockAnalyzer:
 
         processed = 0
         errors = 0
-        for mention_id, stock_code, mention_date in all_pending:
+        total = len(all_pending)
+        
+        for i, (mention_id, stock_code, mention_date) in enumerate(all_pending, 1):
+            status_msg = ""
             try:
                 self._calc_mention_performance(mention_id, stock_code, mention_date)
                 processed += 1
+                status_msg = f"已保存 {stock_code} ({mention_date})"
             except Exception as e:
                 log_warning(f"计算 {stock_code} 表现失败: {e}")
                 errors += 1
+                status_msg = f"失败 {stock_code}: {e}"
 
-            if processed % 20 == 0:
-                self.log(f"📈 已计算 {processed}/{len(all_pending)} 条")
+            if progress_callback:
+                # The callback handles the 10s interval logic
+                progress_callback(i, total, status_msg)
+            
+            # Internal log - keep it periodic
+            if i % 20 == 0 or i == total:
+                self.log(f"📈 收益计算中: {i}/{total} (错误: {errors})")
 
             time.sleep(0.3)
 
@@ -903,7 +914,7 @@ class StockAnalyzer:
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT sm.*, mp.price_at_mention,
+            SELECT sm.context_snippet as context, sm.*, mp.price_at_mention,
                    mp.return_1d, mp.return_3d, mp.return_5d, mp.return_10d, mp.return_20d,
                    mp.excess_return_5d, mp.excess_return_10d,
                    mp.max_return, mp.max_drawdown
@@ -1169,7 +1180,7 @@ class StockAnalyzer:
             LIMIT 10
         ''')
         stats['top_mentioned'] = [
-            {'code': r[0], 'name': r[1], 'count': r[2]}
+            {'stock_code': r[0], 'stock_name': r[1], 'count': r[2]}
             for r in cursor.fetchall()
         ]
 

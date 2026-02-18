@@ -72,12 +72,42 @@ app.add_middleware(
 
 # 全局变量存储爬虫实例和任务状态
 crawler_instance: Optional[ZSXQInteractiveCrawler] = None
-current_tasks: Dict[str, Dict[str, Any]] = {}
+current_tasks: Dict[str, Dict[str, Any]] = {
+    "scheduler": {
+        "task_id": "scheduler",
+        "type": "scheduler",
+        "status": "running",
+        "message": "自动调度系统",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+}
 task_counter = 0
-task_logs: Dict[str, List[str]] = {}  # 存储任务日志
+task_logs: Dict[str, List[str]] = {"scheduler": []}  # 存储任务日志
 sse_connections: Dict[str, List] = {}  # 存储SSE连接
 task_stop_flags: Dict[str, bool] = {}  # 任务停止标志
 file_downloader_instances: Dict[str, Any] = {}  # 存储文件下载器实例
+
+# 调度器日志钩子
+def scheduler_log_callback(msg: str):
+    if "scheduler" not in task_logs:
+        task_logs["scheduler"] = []
+    task_logs["scheduler"].append(msg)
+    if len(task_logs["scheduler"]) > 500:
+        task_logs["scheduler"] = task_logs["scheduler"][-500:]
+
+# 调度器状态更新钩子
+def scheduler_status_callback(status: str, message: str):
+    update_task("scheduler", status, message)
+
+# 延迟导入并初始化调度器回调
+try:
+    from auto_scheduler import get_scheduler
+    sc = get_scheduler()
+    sc.set_log_callback(scheduler_log_callback)
+    sc.set_status_callback(scheduler_status_callback)
+except ImportError:
+    pass
 
 # =========================
 # 本地群扫描（output 目录）
@@ -451,6 +481,17 @@ def stop_task(task_id: str) -> bool:
     if task_id in file_downloader_instances:
         downloader = file_downloader_instances[task_id]
         downloader.set_stop_flag()
+
+    # 特殊处理调度器：调用其内部 stop 方法
+    if task_id == "scheduler":
+        try:
+            from auto_scheduler import get_scheduler
+            # 使用 create_task 异步停止，避免阻塞 API
+            asyncio.create_task(get_scheduler().stop())
+            return True
+        except Exception as e:
+            log_error(f"停止调度器失败: {e}")
+            return False
 
     update_task(task_id, "cancelled", "任务已被用户停止")
 
@@ -5275,27 +5316,61 @@ async def global_stats():
 
 
 @app.get("/api/global/win-rate")
-async def global_win_rate(
+async def get_global_win_rate(
     min_mentions: int = 2,
     return_period: str = 'return_5d',
-    limit: int = 50
+    limit: int = 1000,
+    start_date: Optional[str] = None,
+    sort_by: str = 'win_rate',
+    order: str = 'desc',
+    page: int = 1,
+    page_size: int = 20
 ):
-    """全局胜率排行"""
+    """
+    Get global stock win rate ranking with pagination and filtering.
+    """
+    start_time = time.time()
     try:
         from global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
-        return analyzer.get_global_win_rate(min_mentions, return_period, limit)
+        data = analyzer.get_global_win_rate(
+            min_mentions=min_mentions,
+            return_period=return_period,
+            limit=limit,
+            start_date=start_date,
+            sort_by=sort_by,
+            order=order,
+            page=page,
+            page_size=page_size
+        )
+        duration = time.time() - start_time
+        log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, date={start_date})")
+        return data  # Now returns a dict with pagination info
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"胜率查询失败: {str(e)}")
+        log_error(f"Failed to get global win rate: {e}")
+        return {"error": str(e), "data": [], "total": 0}
+
+
+@app.get("/api/global/stock/{stock_code}/events")
+async def global_stock_events(stock_code: str):
+    """全局股票事件详情"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_stock_events(stock_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取全局股票事件失败: {str(e)}")
 
 
 @app.get("/api/global/sector-heat")
-async def global_sector_heat():
-    """全局板块热度"""
+async def get_global_sector_heat(start_date: Optional[str] = None):
+    """
+    Get global sector heat map.
+    """
     try:
         from global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_heat()
+        return analyzer.get_global_sector_heat(start_date=start_date)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
 
@@ -5348,7 +5423,7 @@ async def scheduler_start():
 
 
 @app.post("/api/scheduler/stop")
-async def scheduler_stop():
+async def stop_scheduler_api():
     """停止调度器"""
     try:
         from auto_scheduler import get_scheduler
@@ -5357,6 +5432,32 @@ async def scheduler_stop():
         return {"status": "stopped", "message": "调度器已停止"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"停止调度器失败: {str(e)}")
+
+
+@app.post("/api/scheduler/analyze")
+async def analyze_scheduler_api():
+    """Trigger manual analysis immediately."""
+    from auto_scheduler import get_scheduler
+    import asyncio
+    scheduler = get_scheduler()
+    # Check if we can trigger analysis
+    asyncio.create_task(scheduler.trigger_manual_analysis_task())
+    return {"status": "analysis_triggered", "message": "数据分析已触发"}
+
+
+@app.post("/api/scheduler/stop_analysis")
+async def stop_analysis_api():
+    """手动停止数据分析任务"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        result = await scheduler.stop_manual_analysis()
+        if result:
+            return {"status": "stopped", "message": "数据分析任务已停止"}
+        else:
+            return {"status": "idle", "message": "没有正在运行的数据分析任务或无法单独停止定时任务"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"停止数据分析失败: {str(e)}")
 
 
 @app.post("/api/scheduler/config")

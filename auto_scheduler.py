@@ -67,10 +67,22 @@ class AutoScheduler:
 
         # 回调
         self._log_callback: Optional[Callable] = None
+        self._status_callback: Optional[Callable] = None
+        self._crawl_task: Optional[asyncio.Task] = None
+        self._calc_task: Optional[asyncio.Task] = None
+        self._manual_calc_task: Optional[asyncio.Task] = None
+        self._stop_event = None
         self._backoff_multiplier = 1  # 退避倍数
 
     def set_log_callback(self, callback: Callable):
         self._log_callback = callback
+
+    def set_status_callback(self, callback: Callable):
+        self._status_callback = callback
+
+    def _update_status(self, status: str, message: str):
+        if self._status_callback:
+            self._status_callback(status, message)
 
     def log(self, message: str):
         timestamp = datetime.now().strftime('%H:%M:%S')
@@ -117,6 +129,7 @@ class AutoScheduler:
         self._stop_event = asyncio.Event()
         self._backoff_multiplier = 1
         self.log("🚀 调度器启动")
+        self._update_status("running", "调度器运行中")
 
         # 启动两个循环
         self._crawl_task = asyncio.create_task(self._crawl_loop())
@@ -125,25 +138,80 @@ class AutoScheduler:
     async def stop(self):
         """停止调度器"""
         if self.state == SchedulerState.STOPPED:
+            self.log("⚠️ 调度器已停止")
             return
 
-        self.log("🛑 调度器停止中...")
         self.state = SchedulerState.STOPPED
-        if self._stop_event:
-            self._stop_event.set()
-
-        # 取消任务
-        for task in [self._crawl_task, self._calc_task]:
+        self.log("🛑 调度器正在停止...")
+        self._update_status("stopped", "调度器停止中")
+        
+        # 等待任务完成
+        # The original code cancels _crawl_task and _calc_task.
+        # The provided diff for stop() seems to be for a different context or a simplified scheduler
+        # that only manages a single _task.
+        # To faithfully apply the change while maintaining existing functionality,
+        # I will adapt the new stop logic to apply to both _crawl_task and _calc_task.
+        tasks_to_cancel = [self._crawl_task, self._calc_task]
+        for task in tasks_to_cancel:
             if task and not task.done():
-                task.cancel()
                 try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
+                    await asyncio.wait_for(task, timeout=5)
+                except asyncio.TimeoutError:
+                    self.log(f"⚠️ 停止超时，强制取消任务: {task.get_name()}")
+                    task.cancel()
+                except Exception as e:
+                    self.log(f"⚠️ 停止任务出错: {task.get_name()} - {e}")
+        
         self._crawl_task = None
         self._calc_task = None
-        self.log("✅ 调度器已停止")
+        self.log("✅ 调度器已完全停止")
+        self._update_status("idle", "调度器已停止")
+
+    async def trigger_manual_analysis_task(self):
+        """手动触发分析任务（独立于主循环）"""
+        self.log("🔧 收到数据分析请求...")
+        
+        if self.stats['is_calculating']:
+             self.log("⚠️ 分析任务正在运行中，忽略请求")
+             return
+
+        self._update_status("running", "数据分析中...")
+
+        # 无论调度器状态如何，都允许手动触发
+        # 使用 create_task 运行，并记录任务对象以便后续可能的手动停止
+        async def _run_and_track():
+            try:
+                await self._run_performance_calc()
+                self.log("✅ 数据分析完成")
+                self._update_status(self.state, "数据分析完成")
+            except asyncio.CancelledError:
+                self.log("🛑 数据分析被手动停止")
+                self.stats['is_calculating'] = False
+                self._update_status(self.state, "数据分析已停止")
+            except Exception as e:
+                self.log(f"❌ 数据分析失败: {e}")
+                self.stats['is_calculating'] = False
+                self._update_status(self.state, f"数据分析失败: {e}")
+            finally:
+                self._manual_calc_task = None
+
+        self._manual_calc_task = asyncio.create_task(_run_and_track())
+        return self._manual_calc_task
+
+    async def stop_manual_analysis(self):
+        """手动停止正在进行的数据分析任务"""
+        if self._manual_calc_task and not self._manual_calc_task.done():
+            self.log("🛑 正在停止数据分析任务...")
+            self._manual_calc_task.cancel()
+            return True
+        elif self.stats['is_calculating']:
+            # 如果标记了正在计算但没有记录任务（例如定时任务在运行）
+            # 也可以尝试标记停止，虽然定时任务由 _calc_task 管理
+            self.log("⚠️ 无法单独停止定时分析任务，需停止整个调度器")
+            return False
+        else:
+            self.log("⚠️ 没有正在运行的数据分析任务")
+            return False
 
     # ========== 高频循环：爬取 + 提取 ==========
 
@@ -294,6 +362,18 @@ class AutoScheduler:
                 self.log(f"❌ 计算循环异常: {e}")
                 await self._sleep_with_check(60)
 
+    async def trigger_analysis(self):
+        """手动触发收益分析"""
+        if self.state != SchedulerState.RUNNING:
+            return
+        if self.stats.get('is_calculating'):
+            self.log("⚠️ 分析正在进行中...")
+            return
+        
+        self.log("👆 手动触发收益分析...")
+        # Start in background if called from synchronous context, but here it is async
+        await self._run_performance_calc()
+
     def _get_next_calc_time(self, now: datetime) -> Optional[datetime]:
         """获取下一次计算时间点"""
         calc_times = self.config.get('calc_times', ['12:00', '15:15'])
@@ -312,45 +392,62 @@ class AutoScheduler:
 
     async def _run_performance_calc(self):
         """执行收益计算"""
+        if self.stats.get('is_calculating'):
+            return
+
         self.stats['is_calculating'] = True
-        self.log("📈 开始定时收益计算...")
+        self.log("📈 开始收益计算...")
 
-        loop = asyncio.get_event_loop()
-        groups = self._get_active_groups()
-
-        for group in groups:
-            if self.state != SchedulerState.RUNNING:
-                break
-
-            group_id = group['group_id']
-            try:
-                def _sync_calc(gid):
-                    from stock_analyzer import StockAnalyzer
-                    analyzer = StockAnalyzer(gid)
-                    return analyzer.calc_pending_performance(
-                        calc_window_days=self.config['calc_window_days']
-                    )
-
-                result = await loop.run_in_executor(None, _sync_calc, group_id)
-                processed = result.get('processed', 0)
-                if processed > 0:
-                    self.log(f"📊 群组 {group_id}: 计算 {processed} 条收益")
-
-            except Exception as e:
-                self.log(f"⚠️ 群组 {group_id} 收益计算失败: {e}")
-
-            # 群组间短暂间隔
-            await self._sleep_with_check(5)
-
-        self.stats['is_calculating'] = False
-        self.stats['last_calc_time'] = datetime.now().isoformat()
-
-        # 刷新全局缓存
         try:
-            from global_analyzer import get_global_analyzer
-            get_global_analyzer().invalidate_cache()
-        except Exception:
-            pass
+            loop = asyncio.get_event_loop()
+            groups = self._get_active_groups()
+            total_groups = len(groups)
+            self.log(f"📋 共 {total_groups} 个群组需要计算收益")
+
+            for idx, group in enumerate(groups, 1):
+                group_id = group['group_id']
+                group_name = group.get('group_name', group_id)
+                self.log(f"⏳ [{idx}/{total_groups}] 正在计算群 {group_name} ({group_id})...")
+
+                try:
+                    def _sync_calc(gid):
+                        from stock_analyzer import StockAnalyzer
+                        analyzer = StockAnalyzer(gid)
+                        
+                        import time
+                        last_log_time = 0
+                        
+                        def progress_cb(current, total, status):
+                            nonlocal last_log_time
+                            now = time.time()
+                            if now - last_log_time >= 10 or current == total or current == 1:
+                                self.log(f"⏳ [群组 {gid}] 进度: {current}/{total} - {status}")
+                                last_log_time = now
+
+                        return analyzer.calc_pending_performance(
+                            calc_window_days=self.config['calc_window_days'],
+                            progress_callback=progress_cb
+                        )
+
+                    result = await loop.run_in_executor(None, _sync_calc, group_id)
+                    processed = result.get('processed', 0)
+                    if processed > 0:
+                        self.log(f"📊 群组 {group_id}: 计算 {processed} 条收益")
+
+                except Exception as e:
+                    self.log(f"⚠️ 群组 {group_id} 收益计算失败: {e}")
+
+                await self._sleep_with_check(5)
+
+            self.stats['last_calc_time'] = datetime.now().isoformat()
+            # 刷新全局缓存
+            try:
+                from global_analyzer import get_global_analyzer
+                get_global_analyzer().invalidate_cache()
+            except Exception:
+                pass
+        finally:
+            self.stats['is_calculating'] = False
 
         self.log("✅ 收益计算完成")
 
