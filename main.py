@@ -108,7 +108,7 @@ def _safe_listdir(path: str):
 
 
 def _collect_numeric_dirs(base: str, limit: int) -> set:
-    """
+    r"""
     扫描 base 的一级子目录，收集纯数字目录名（^\d+$）作为群ID。
     忽略：非目录、软链接、隐藏目录（以 . 开头）。
     """
@@ -5043,6 +5043,332 @@ async def get_column_topic_full_comments(group_id: str, topic_id: int):
     except Exception as e:
         log_exception(f"获取专栏完整评论失败: topic_id={topic_id}")
         raise HTTPException(status_code=500, detail=f"获取完整评论失败: {str(e)}")
+
+
+# ========== 股票舆情分析 API ==========
+
+from stock_analyzer import StockAnalyzer
+
+
+@app.post("/api/groups/{group_id}/stock/scan")
+async def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: bool = False):
+    """扫描群组帖子，提取股票提及并计算后续表现（后台任务）"""
+    task_id = create_task(f"stock_scan_{group_id}", f"股票提及扫描: {group_id}")
+
+    async def _scan_task():
+        try:
+            update_task(task_id, "running", "正在扫描...")
+            add_task_log(task_id, "🚀 开始股票提及扫描...")
+
+            analyzer = StockAnalyzer(group_id, log_callback=lambda msg: add_task_log(task_id, msg))
+            result = analyzer.scan_group(force=force)
+
+            add_task_log(task_id, f"✅ 扫描完成: {result['mentions_extracted']} 次提及, {result['unique_stocks']} 只股票")
+            update_task(task_id, "completed",
+                        f"完成: {result['topics_scanned']} 帖子, {result['mentions_extracted']} 次提及, "
+                        f"{result['unique_stocks']} 只股票, {result['performance_calculated']} 条表现计算")
+        except Exception as e:
+            add_task_log(task_id, f"❌ 扫描失败: {e}")
+            update_task(task_id, "failed", f"扫描失败: {e}")
+
+    background_tasks.add_task(_scan_task)
+    return {"task_id": task_id, "message": "股票扫描任务已启动"}
+
+
+@app.get("/api/groups/{group_id}/stock/mentions")
+async def get_stock_mentions(group_id: str, stock_code: str = None,
+                              page: int = 1, per_page: int = 50,
+                              sort_by: str = 'mention_date', order: str = 'desc'):
+    """获取股票提及列表"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_mentions(stock_code=stock_code, page=page,
+                                     per_page=per_page, sort_by=sort_by, order=order)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取提及数据失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/{stock_code}/events")
+async def get_stock_events(group_id: str, stock_code: str):
+    """获取某只股票的全部提及事件 + 每次后续表现"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_stock_events(stock_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取股票事件失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/{stock_code}/price")
+async def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90):
+    """获取股票价格走势 + 提及标注点"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_stock_price_with_mentions(stock_code, days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取价格数据失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/win-rate")
+async def get_stock_win_rate(group_id: str, min_mentions: int = 2,
+                              return_period: str = 'return_5d', limit: int = 50):
+    """胜率排行榜：按提及后N日正收益率排序"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_win_rate_ranking(min_mentions=min_mentions,
+                                              return_period=return_period, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取胜率排行失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/sector-heat")
+async def get_sector_heatmap(group_id: str):
+    """板块热度分析"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_sector_heatmap()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取板块热度失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/signals")
+async def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2):
+    """信号雷达：近期高频提及 + 历史胜率高的股票"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_signals(lookback_days=lookback_days, min_mentions=min_mentions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取信号雷达失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/stats")
+async def get_stock_stats(group_id: str):
+    """获取股票分析概览统计"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_summary_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
+
+
+# ========== AI 智能分析 API ==========
+
+from ai_analyzer import AIAnalyzer
+
+class AIConfigModel(BaseModel):
+    api_key: str
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+
+def _get_ai_analyzer(group_id: str) -> AIAnalyzer:
+    """获取 AI 分析器实例"""
+    from db_path_manager import get_db_path
+    db_path = get_db_path(group_id)
+    return AIAnalyzer(db_path=db_path, group_id=group_id)
+
+
+@app.get("/api/ai/config")
+async def get_ai_config():
+    """获取 AI 配置状态"""
+    try:
+        analyzer = AIAnalyzer()
+        return analyzer.get_config_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取AI配置失败: {str(e)}")
+
+
+@app.post("/api/ai/config")
+async def update_ai_config(config: AIConfigModel):
+    """更新 AI 配置"""
+    try:
+        analyzer = AIAnalyzer()
+        analyzer.update_config(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            model=config.model
+        )
+        return {"success": True, "message": "AI 配置已更新"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新AI配置失败: {str(e)}")
+
+
+@app.post("/api/groups/{group_id}/ai/analyze/{stock_code}")
+async def ai_analyze_stock(group_id: str, stock_code: str, force: bool = False):
+    """AI 分析指定股票"""
+    try:
+        ai = _get_ai_analyzer(group_id)
+        result = ai.analyze_stock(stock_code, force=force)
+        if result.get('error'):
+            raise HTTPException(status_code=400, detail=result['error'])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI分析失败: {str(e)}")
+
+
+@app.post("/api/groups/{group_id}/ai/daily-brief")
+async def ai_daily_brief(group_id: str, lookback_days: int = 7, force: bool = False):
+    """生成每日投资简报"""
+    try:
+        ai = _get_ai_analyzer(group_id)
+        result = ai.generate_daily_brief(lookback_days=lookback_days, force=force)
+        if result.get('error'):
+            raise HTTPException(status_code=400, detail=result['error'])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成简报失败: {str(e)}")
+
+
+@app.post("/api/groups/{group_id}/ai/consensus")
+async def ai_consensus(group_id: str, top_n: int = 10, force: bool = False):
+    """共识分析"""
+    try:
+        ai = _get_ai_analyzer(group_id)
+        result = ai.analyze_consensus(top_n=top_n, force=force)
+        if result.get('error'):
+            raise HTTPException(status_code=400, detail=result['error'])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"共识分析失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/ai/history")
+async def ai_history(group_id: str, summary_type: Optional[str] = None, limit: int = 20):
+    """获取 AI 分析历史"""
+    try:
+        ai = _get_ai_analyzer(group_id)
+        return ai.get_history(summary_type=summary_type, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取历史失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/ai/history/{summary_id}")
+async def ai_history_detail(group_id: str, summary_id: int):
+    """获取某条历史分析的完整内容"""
+    try:
+        ai = _get_ai_analyzer(group_id)
+        result = ai.get_history_detail(summary_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="未找到该分析记录")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取详情失败: {str(e)}")
+
+
+# ========== 全局看板 API ==========
+
+@app.get("/api/global/stats")
+async def global_stats():
+    """全局统计概览"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"全局统计失败: {str(e)}")
+
+
+@app.get("/api/global/win-rate")
+async def global_win_rate(
+    min_mentions: int = 2,
+    return_period: str = 'return_5d',
+    limit: int = 50
+):
+    """全局胜率排行"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_win_rate(min_mentions, return_period, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"胜率查询失败: {str(e)}")
+
+
+@app.get("/api/global/sector-heat")
+async def global_sector_heat():
+    """全局板块热度"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_sector_heat()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
+
+
+@app.get("/api/global/signals")
+async def global_signals(lookback_days: int = 7, min_mentions: int = 2):
+    """全局信号雷达"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_signals(lookback_days, min_mentions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"信号查询失败: {str(e)}")
+
+
+@app.get("/api/global/groups")
+async def global_groups_overview():
+    """群组概览"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_groups_overview()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
+
+
+# ========== 调度器 API ==========
+
+@app.get("/api/scheduler/status")
+async def scheduler_status():
+    """调度器状态"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        return scheduler.get_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取调度器状态失败: {str(e)}")
+
+
+@app.post("/api/scheduler/start")
+async def scheduler_start():
+    """启动调度器"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        await scheduler.start()
+        return {"status": "started", "message": "调度器已启动"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"启动调度器失败: {str(e)}")
+
+
+@app.post("/api/scheduler/stop")
+async def scheduler_stop():
+    """停止调度器"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        await scheduler.stop()
+        return {"status": "stopped", "message": "调度器已停止"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"停止调度器失败: {str(e)}")
+
+
+@app.post("/api/scheduler/config")
+async def scheduler_update_config(config: dict):
+    """更新调度器配置"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        scheduler.update_config(config)
+        return {"status": "updated", "config": scheduler.config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
 
 
 if __name__ == "__main__":

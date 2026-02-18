@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * API客户端 - 与后端FastAPI服务通信
  */
@@ -159,7 +160,7 @@ class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    
+
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
@@ -343,10 +344,10 @@ class ApiClient {
 
   // 文件相关
   async downloadFiles(groupId: number, maxFiles?: number, sortBy: string = 'download_count',
-                     downloadInterval: number = 1.0, longSleepInterval: number = 60.0,
-                     filesPerBatch: number = 10, downloadIntervalMin?: number,
-                     downloadIntervalMax?: number, longSleepIntervalMin?: number,
-                     longSleepIntervalMax?: number) {
+    downloadInterval: number = 1.0, longSleepInterval: number = 60.0,
+    filesPerBatch: number = 10, downloadIntervalMin?: number,
+    downloadIntervalMax?: number, longSleepIntervalMin?: number,
+    longSleepIntervalMax?: number) {
     const requestBody: any = {
       max_files: maxFiles,
       sort_by: sortBy,
@@ -414,12 +415,12 @@ class ApiClient {
       page: page.toString(),
       per_page: perPage.toString(),
     });
-    
+
     if (search) {
       params.append('search', search);
     }
 
-    const response = await this.request<{topics: Topic[], pagination: any}>(`/api/topics?${params}`);
+    const response = await this.request<{ topics: Topic[], pagination: any }>(`/api/topics?${params}`);
     return {
       data: response.topics,
       pagination: response.pagination,
@@ -436,7 +437,7 @@ class ApiClient {
       params.append('status', status);
     }
 
-    const response = await this.request<{files: FileItem[], pagination: any}>(`/api/files/${groupId}?${params}`);
+    const response = await this.request<{ files: FileItem[], pagination: any }>(`/api/files/${groupId}?${params}`);
     return {
       data: response.files,
       pagination: response.pagination,
@@ -450,7 +451,7 @@ class ApiClient {
     });
   }
 
-  async getGroups(): Promise<{groups: Group[], total: number}> {
+  async getGroups(): Promise<{ groups: Group[], total: number }> {
     return this.request('/api/groups');
   }
 
@@ -468,7 +469,7 @@ class ApiClient {
     }
 
     const url = `/api/groups/${groupId}/topics?${params}`;
-    const response = await this.request<{topics: Topic[], pagination: any}>(url);
+    const response = await this.request<{ topics: Topic[], pagination: any }>(url);
 
     // 🧪 调试输出：原始返回中的 topic_id（前 10 条）
     try {
@@ -529,7 +530,7 @@ class ApiClient {
       per_page: perPage.toString(),
     });
 
-    const response = await this.request<{topics: Topic[], pagination: any}>(`/api/groups/${groupId}/tags/${tagId}/topics?${params}`);
+    const response = await this.request<{ topics: Topic[], pagination: any }>(`/api/groups/${groupId}/tags/${tagId}/topics?${params}`);
     return {
       data: response.topics,
       pagination: response.pagination,
@@ -733,6 +734,137 @@ class ApiClient {
   }> {
     return this.request(`/api/groups/${groupId}/columns/all`, {
       method: 'DELETE',
+    });
+  }
+
+  // =========================
+  // 股票舆情分析 API
+  // =========================
+
+  async scanStocks(groupId: number | string, force: boolean = false): Promise<{ task_id: string; message: string }> {
+    return this.request(`/api/groups/${groupId}/stock/scan?force=${force}`, { method: 'POST' });
+  }
+
+  async getStockStats(groupId: number | string): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/stats`);
+  }
+
+  async getStockMentions(groupId: number | string, params?: {
+    stock_code?: string; page?: number; per_page?: number;
+    sort_by?: string; order?: string;
+  }): Promise<any> {
+    const q = new URLSearchParams();
+    if (params?.stock_code) q.append('stock_code', params.stock_code);
+    if (params?.page) q.append('page', params.page.toString());
+    if (params?.per_page) q.append('per_page', params.per_page.toString());
+    if (params?.sort_by) q.append('sort_by', params.sort_by);
+    if (params?.order) q.append('order', params.order);
+    return this.request(`/api/groups/${groupId}/stock/mentions?${q}`);
+  }
+
+  async getStockEvents(groupId: number | string, stockCode: string): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/${stockCode}/events`);
+  }
+
+  async getStockPrice(groupId: number | string, stockCode: string, days: number = 90): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/${stockCode}/price?days=${days}`);
+  }
+
+  async getStockWinRate(groupId: number | string, params?: {
+    min_mentions?: number; return_period?: string; limit?: number;
+  }): Promise<any> {
+    const q = new URLSearchParams();
+    if (params?.min_mentions) q.append('min_mentions', params.min_mentions.toString());
+    if (params?.return_period) q.append('return_period', params.return_period);
+    if (params?.limit) q.append('limit', params.limit.toString());
+    return this.request(`/api/groups/${groupId}/stock/win-rate?${q}`);
+  }
+
+  async getSectorHeat(groupId: number | string): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/sector-heat`);
+  }
+
+  async getStockSignals(groupId: number | string, lookbackDays: number = 7, minMentions: number = 2): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/signals?lookback_days=${lookbackDays}&min_mentions=${minMentions}`);
+  }
+
+  // ========== AI 智能分析 API ==========
+
+  async getAIConfig(): Promise<any> {
+    return this.request('/api/ai/config');
+  }
+
+  async updateAIConfig(config: { api_key: string; base_url?: string; model?: string }): Promise<any> {
+    return this.request('/api/ai/config', { method: 'POST', body: JSON.stringify(config) });
+  }
+
+  async aiAnalyzeStock(groupId: number | string, stockCode: string, force: boolean = false): Promise<any> {
+    return this.request(`/api/groups/${groupId}/ai/analyze/${stockCode}?force=${force}`, { method: 'POST' });
+  }
+
+  async aiDailyBrief(groupId: number | string, lookbackDays: number = 7, force: boolean = false): Promise<any> {
+    return this.request(`/api/groups/${groupId}/ai/daily-brief?lookback_days=${lookbackDays}&force=${force}`, { method: 'POST' });
+  }
+
+  async aiConsensus(groupId: number | string, topN: number = 10, force: boolean = false): Promise<any> {
+    return this.request(`/api/groups/${groupId}/ai/consensus?top_n=${topN}&force=${force}`, { method: 'POST' });
+  }
+
+  async getAIHistory(groupId: number | string, summaryType?: string, limit: number = 20): Promise<any> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (summaryType) params.set('summary_type', summaryType);
+    return this.request(`/api/groups/${groupId}/ai/history?${params.toString()}`);
+  }
+
+  async getAIHistoryDetail(groupId: number | string, summaryId: number): Promise<any> {
+    return this.request(`/api/groups/${groupId}/ai/history/${summaryId}`);
+  }
+
+  // ========== 全局看板 API ==========
+
+  async getGlobalStats(): Promise<any> {
+    return this.request('/api/global/stats');
+  }
+
+  async getGlobalWinRate(minMentions: number = 2, returnPeriod: string = 'return_5d', limit: number = 50): Promise<any> {
+    const params = new URLSearchParams({
+      min_mentions: String(minMentions),
+      return_period: returnPeriod,
+      limit: String(limit),
+    });
+    return this.request(`/api/global/win-rate?${params.toString()}`);
+  }
+
+  async getGlobalSectorHeat(): Promise<any> {
+    return this.request('/api/global/sector-heat');
+  }
+
+  async getGlobalSignals(lookbackDays: number = 7, minMentions: number = 2): Promise<any> {
+    return this.request(`/api/global/signals?lookback_days=${lookbackDays}&min_mentions=${minMentions}`);
+  }
+
+  async getGlobalGroups(): Promise<any> {
+    return this.request('/api/global/groups');
+  }
+
+  // ========== 调度器 API ==========
+
+  async getSchedulerStatus(): Promise<any> {
+    return this.request('/api/scheduler/status');
+  }
+
+  async startScheduler(): Promise<any> {
+    return this.request('/api/scheduler/start', { method: 'POST' });
+  }
+
+  async stopScheduler(): Promise<any> {
+    return this.request('/api/scheduler/stop', { method: 'POST' });
+  }
+
+  async updateSchedulerConfig(config: Record<string, any>): Promise<any> {
+    return this.request('/api/scheduler/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
     });
   }
 }

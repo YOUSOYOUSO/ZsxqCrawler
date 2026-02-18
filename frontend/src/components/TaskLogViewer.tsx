@@ -64,7 +64,7 @@ export default function TaskLogViewer({
     eventSource.onmessage = (event) => {
       try {
         const data: LogMessage = JSON.parse(event.data);
-        
+
         if (data.type === 'log' && data.message) {
           setLogs(prev => [...prev, data.message!]);
 
@@ -205,7 +205,7 @@ export default function TaskLogViewer({
     }
   };
 
-  const getLogIcon = (type: string): string => {
+  const _getLogIcon = (type: string): string => {
     switch (type) {
       case 'start': return '🚀';
       case 'success': return '✅';
@@ -248,131 +248,129 @@ export default function TaskLogViewer({
     return (
       <>
         <div className="h-full flex flex-col p-3">
-        {/* 状态栏 */}
-        <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${
-                taskId && isConnected ? 'bg-green-500' : 'bg-gray-400'
-              }`} />
-              <span className="text-sm text-gray-600">状态:</span>
-              <Badge className={`text-xs px-2 py-1 ${getStatusColor(taskId ? status : 'idle')}`}>
-                {taskId ? getStatusText(status) : '空闲'}
-              </Badge>
-            </div>
-            {/* 停止按钮 */}
-            {taskId && status === 'running' && (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleStopTask}
-                disabled={stopping}
-                className="h-6 px-2 text-xs"
-              >
-                <Square className="h-3 w-3 mr-1" />
-                {stopping ? '停止中' : '停止'}
-              </Button>
-            )}
-          </div>
-          <div className="text-xs text-gray-500 font-mono">
-            {taskId ? `${taskId.slice(0, 8)}...` : '无任务'}
-          </div>
-        </div>
-
-        {/* 日志内容 */}
-        <div className="flex-1 bg-white rounded-lg border border-gray-200 overflow-hidden flex flex-col">
-          <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex-shrink-0">
-            <div className="flex items-center justify-between">
+          {/* 状态栏 */}
+          <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 mb-3">
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
-                <Terminal className="h-3 w-3 text-gray-500" />
-                <span className="text-xs font-medium text-gray-600">日志</span>
+                <div className={`w-2 h-2 rounded-full ${taskId && isConnected ? 'bg-green-500' : 'bg-gray-400'
+                  }`} />
+                <span className="text-sm text-gray-600">状态:</span>
+                <Badge className={`text-xs px-2 py-1 ${getStatusColor(taskId ? status : 'idle')}`}>
+                  {taskId ? getStatusText(status) : '空闲'}
+                </Badge>
               </div>
-              <span className="text-xs text-gray-500">{taskId ? `${logs.length} 条` : '等待任务'}</span>
+              {/* 停止按钮 */}
+              {taskId && status === 'running' && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleStopTask}
+                  disabled={stopping}
+                  className="h-6 px-2 text-xs"
+                >
+                  <Square className="h-3 w-3 mr-1" />
+                  {stopping ? '停止中' : '停止'}
+                </Button>
+              )}
+            </div>
+            <div className="text-xs text-gray-500 font-mono">
+              {taskId ? `${taskId.slice(0, 8)}...` : '无任务'}
             </div>
           </div>
-          <ScrollArea className="flex-1 w-full" ref={scrollAreaRef}>
-            <div className="p-3 space-y-1">
-              {!taskId ? (
-                <div className="text-gray-500 text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
-                    <MessageSquare className="h-8 w-8 text-gray-400" />
-                  </div>
-                  <p className="font-medium text-gray-600 mb-1">暂无运行中的任务</p>
-                  <p className="text-sm text-gray-500">执行爬取操作后将在此显示实时日志</p>
-                </div>
-              ) : logs.length === 0 ? (
-                <div className="text-gray-500 text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
-                    <MessageSquare className="h-8 w-8 text-gray-400" />
-                  </div>
-                  <p className="font-medium text-gray-600 mb-1">等待任务开始</p>
-                  <p className="text-sm text-gray-500">日志将在任务执行时实时显示</p>
-                </div>
-              ) : (
-                logs.map((log, index) => {
-                  // 解析日志类型和内容
-                  const logType = getLogType(log);
-                  const logContent = cleanLogContent(log);
-                  const timestamp = extractTimestamp(log);
 
-                  return (
-                    <div key={index} className={`text-sm py-1 px-3 rounded border-l-2 ${getLogStyle(logType)} hover:bg-opacity-80 transition-colors`}>
-                      <div className="flex items-center gap-3">
-                        <div className="text-xs text-gray-500 font-mono flex-shrink-0 w-16">
-                          {timestamp}
-                        </div>
-                        <div className="text-gray-900 flex-1 min-w-0">
-                          {logContent}
+          {/* 日志内容 */}
+          <div className="flex-1 bg-white rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+            <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-3 w-3 text-gray-500" />
+                  <span className="text-xs font-medium text-gray-600">日志</span>
+                </div>
+                <span className="text-xs text-gray-500">{taskId ? `${logs.length} 条` : '等待任务'}</span>
+              </div>
+            </div>
+            <ScrollArea className="flex-1 w-full" ref={scrollAreaRef}>
+              <div className="p-3 space-y-1">
+                {!taskId ? (
+                  <div className="text-gray-500 text-center py-12">
+                    <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
+                      <MessageSquare className="h-8 w-8 text-gray-400" />
+                    </div>
+                    <p className="font-medium text-gray-600 mb-1">暂无运行中的任务</p>
+                    <p className="text-sm text-gray-500">执行爬取操作后将在此显示实时日志</p>
+                  </div>
+                ) : logs.length === 0 ? (
+                  <div className="text-gray-500 text-center py-12">
+                    <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
+                      <MessageSquare className="h-8 w-8 text-gray-400" />
+                    </div>
+                    <p className="font-medium text-gray-600 mb-1">等待任务开始</p>
+                    <p className="text-sm text-gray-500">日志将在任务执行时实时显示</p>
+                  </div>
+                ) : (
+                  logs.map((log, index) => {
+                    // 解析日志类型和内容
+                    const logType = getLogType(log);
+                    const logContent = cleanLogContent(log);
+                    const timestamp = extractTimestamp(log);
+
+                    return (
+                      <div key={index} className={`text-sm py-1 px-3 rounded border-l-2 ${getLogStyle(logType)} hover:bg-opacity-80 transition-colors`}>
+                        <div className="flex items-center gap-3">
+                          <div className="text-xs text-gray-500 font-mono flex-shrink-0 w-16">
+                            {timestamp}
+                          </div>
+                          <div className="text-gray-900 flex-1 min-w-0">
+                            {logContent}
+                          </div>
                         </div>
                       </div>
+                    );
+                  })
+                )}
+                {taskId && status === 'running' && (
+                  <div className="flex items-center gap-3 text-blue-600 py-1 px-3 bg-blue-50 rounded border-l-2 border-blue-400">
+                    <div className="text-xs text-gray-500 font-mono flex-shrink-0 w-16">
+                      {new Date().toLocaleTimeString()}
                     </div>
-                  );
-                })
-              )}
-              {taskId && status === 'running' && (
-                <div className="flex items-center gap-3 text-blue-600 py-1 px-3 bg-blue-50 rounded border-l-2 border-blue-400">
-                  <div className="text-xs text-gray-500 font-mono flex-shrink-0 w-16">
-                    {new Date().toLocaleTimeString()}
+                    <div className="flex items-center gap-2 flex-1">
+                      <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
+                      <span className="text-sm">任务正在执行中...</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-1">
-                    <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
-                    <span className="text-sm">任务正在执行中...</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-        </div>
+                )}
+              </div>
+            </ScrollArea>
+          </div>
 
-        {/* 过期提示对话框 */}
-        <AlertDialog open={showExpiredDialog} onOpenChange={setShowExpiredDialog}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle className="flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5 text-amber-500" />
-                知识星球会员已过期
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                {expiredMessage || '您的知识星球会员体验已到期，无法继续进行数据采集操作。请续费后重试。'}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogAction onClick={() => setShowExpiredDialog(false)}>
-                我知道了
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
+          {/* 过期提示对话框 */}
+          <AlertDialog open={showExpiredDialog} onOpenChange={setShowExpiredDialog}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5 text-amber-500" />
+                  知识星球会员已过期
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {expiredMessage || '您的知识星球会员体验已到期，无法继续进行数据采集操作。请续费后重试。'}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogAction onClick={() => setShowExpiredDialog(false)}>
+                  我知道了
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </>
     );
   }
 
   // 原有的浮动窗口模式
   return (
-    <Card className={`fixed bottom-4 right-4 w-96 border border-gray-300 shadow-none z-50 ${
-      isMinimized ? 'h-12' : 'h-80'
-    } transition-all duration-200`}>
+    <Card className={`fixed bottom-4 right-4 w-96 border border-gray-300 shadow-none z-50 ${isMinimized ? 'h-12' : 'h-80'
+      } transition-all duration-200`}>
       <CardHeader className="pb-2 px-3 py-2 bg-gray-900 text-white rounded-t-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -385,9 +383,8 @@ export default function TaskLogViewer({
             <Badge className={`text-xs px-2 py-0 ${getStatusColor(status)}`}>
               {getStatusText(status)}
             </Badge>
-            <div className={`w-2 h-2 rounded-full ${
-              isConnected ? 'bg-green-400' : 'bg-red-400'
-            }`} title={isConnected ? '已连接' : '未连接'} />
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'
+              }`} title={isConnected ? '已连接' : '未连接'} />
             {onToggleMinimize && (
               <Button
                 variant="ghost"
@@ -409,7 +406,7 @@ export default function TaskLogViewer({
           </div>
         </div>
       </CardHeader>
-      
+
       {!isMinimized && (
         <CardContent className="p-0 bg-black text-green-400 font-mono text-xs">
           <ScrollArea className="h-64 w-full" ref={scrollAreaRef}>

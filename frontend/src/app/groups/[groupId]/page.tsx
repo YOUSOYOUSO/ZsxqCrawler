@@ -21,6 +21,7 @@ import { createSafeHtml, createSafeHtmlWithHighlight, extractPlainText } from '@
 import DownloadSettingsDialog from '@/components/DownloadSettingsDialog';
 import CrawlSettingsDialog from '@/components/CrawlSettingsDialog';
 import ImageGallery from '@/components/ImageGallery';
+import StockDashboard from '@/components/StockDashboard';
 
 // 话题详情缓存，避免重复请求
 const topicDetailCache: Map<string, any> = new Map();
@@ -146,11 +147,11 @@ export default function GroupDetailPage() {
   const [crawlIntervalMax, setCrawlIntervalMax] = useState<number>(5);
   const [crawlLongSleepIntervalMin, setCrawlLongSleepIntervalMin] = useState<number>(180);
   const [crawlLongSleepIntervalMax, setCrawlLongSleepIntervalMax] = useState<number>(300);
-// 时间区间采集（最近N天 或 自定义日期）
-const [quickLastDays, setQuickLastDays] = useState<number>(30);
-const [rangeStartDate, setRangeStartDate] = useState<string>('');
-const [rangeEndDate, setRangeEndDate] = useState<string>('');
-const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
+  // 时间区间采集（最近N天 或 自定义日期）
+  const [quickLastDays, setQuickLastDays] = useState<number>(30);
+  const [rangeStartDate, setRangeStartDate] = useState<string>('');
+  const [rangeEndDate, setRangeEndDate] = useState<string>('');
+  const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
 
   // 单个话题采集状态
   const [singleTopicId, setSingleTopicId] = useState<string>('');
@@ -289,7 +290,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
         data = await apiClient.getGroupTopics(groupId, currentPage, 20, searchTerm || undefined);
       }
 
-       // 检查是否获取到有效数据
+      // 检查是否获取到有效数据
       if (!data || !data.data) {
         throw new Error('API返回空数据，可能是反爬虫机制');
       }
@@ -782,13 +783,13 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
           prevTopics.map(topic =>
             parseInt(topic.topic_id.toString()) === parseInt(topicId.toString())
               ? {
-                  ...topic,
-                  likes_count: response.updated_data.likes_count,
-                  comments_count: response.updated_data.comments_count,
-                  reading_count: response.updated_data.reading_count,
-                  readers_count: response.updated_data.readers_count,
-                  imported_at: new Date().toISOString() // 更新获取时间
-                }
+                ...topic,
+                likes_count: response.updated_data.likes_count,
+                comments_count: response.updated_data.comments_count,
+                reading_count: response.updated_data.reading_count,
+                readers_count: response.updated_data.readers_count,
+                imported_at: new Date().toISOString() // 更新获取时间
+              }
               : topic
           )
         );
@@ -1131,8 +1132,8 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
     // 详情由父组件预取并通过 props 提供
 
     return (
-      <div ref={cardRef} className="border border-gray-200 shadow-none w-full max-w-full bg-white rounded-lg" style={{width: '100%', maxWidth: '100%', boxSizing: 'border-box'}}>
-        <div className="p-4 w-full max-w-full" style={{width: '100%', maxWidth: '100%', boxSizing: 'border-box'}}>
+      <div ref={cardRef} className="border border-gray-200 shadow-none w-full max-w-full bg-white rounded-lg" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
+        <div className="p-4 w-full max-w-full" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
           <div className="space-y-3 w-full">
             {/* 作者信息和徽章 */}
             <div className="flex items-start justify-between">
@@ -1282,12 +1283,12 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                 <div className="space-y-4">
                   {/* 问题部分 */}
                   {(topic.question_text || topicDetail?.question?.text) && (
-                    <div className="w-full max-w-full overflow-hidden" style={{minWidth: 0}}>
+                    <div className="w-full max-w-full overflow-hidden" style={{ minWidth: 0 }}>
                       {/* 提问者信息 */}
                       <div className="text-sm text-gray-600 mb-2">
                         <span className="font-medium">
                           {topicDetail?.question?.anonymous ? '匿名用户' :
-                           topicDetail?.question?.owner?.name || '用户'} 提问：
+                            topicDetail?.question?.owner?.name || '用户'} 提问：
                         </span>
                         {/* 匿名用户的IP信息 */}
                         {topicDetail?.question?.anonymous && topicDetail?.question?.owner_location && (
@@ -1298,10 +1299,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                       </div>
 
                       {/* 问题内容 - 使用引用样式，文字颜色更淡 */}
-                      <div className="bg-gray-50 border-l-4 border-gray-300 pl-4 py-3 rounded-r-lg w-full max-w-full overflow-hidden" style={{minWidth: 0}}>
+                      <div className="bg-gray-50 border-l-4 border-gray-300 pl-4 py-3 rounded-r-lg w-full max-w-full overflow-hidden" style={{ minWidth: 0 }}>
                         <div
                           className="text-sm text-gray-500 whitespace-pre-wrap break-words break-all leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-700 prose-a:text-blue-500 prose-a:align-middle"
-                          style={{wordBreak: 'break-all', overflowWrap: 'anywhere'}}
+                          style={{ wordBreak: 'break-all', overflowWrap: 'anywhere' }}
                           dangerouslySetInnerHTML={createSafeHtmlWithHighlight(topic.question_text || topicDetail?.question?.text || '', searchTerm)}
                         />
                       </div>
@@ -1311,11 +1312,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                   {/* 回答部分 - 不再显示头像，因为已经在顶部显示了 */}
                   {(topic.answer_text || topicDetail?.answer?.text) && (
                     <div className="w-full">
-                      <div className="w-full max-w-full overflow-hidden" style={{minWidth: 0}}>
+                      <div className="w-full max-w-full overflow-hidden" style={{ minWidth: 0 }}>
                         <div
-                          className={`text-sm text-gray-800 whitespace-pre-wrap break-words break-all leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${
-                            !expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
-                          }`}
+                          className={`text-sm text-gray-800 whitespace-pre-wrap break-words break-all leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${!expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
+                            }`}
                           style={{
                             wordBreak: 'break-all',
                             overflowWrap: 'anywhere'
@@ -1341,12 +1341,11 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                 <div className="w-full">
                   {topic.talk_text ? (
                     <div className="w-full">
-                      <div ref={contentRef} className="bg-gray-50 rounded-lg p-3 w-full max-w-full overflow-hidden" style={{minWidth: 0}}>
+                      <div ref={contentRef} className="bg-gray-50 rounded-lg p-3 w-full max-w-full overflow-hidden" style={{ minWidth: 0 }}>
                         <div
-                          className={`text-sm text-gray-800 whitespace-pre-wrap break-words break-all prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${
-                            !expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
-                          }`}
-                          style={{wordBreak: 'break-all', overflowWrap: 'anywhere'}}
+                          className={`text-sm text-gray-800 whitespace-pre-wrap break-words break-all prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${!expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
+                            }`}
+                          style={{ wordBreak: 'break-all', overflowWrap: 'anywhere' }}
                           dangerouslySetInnerHTML={createSafeHtmlWithHighlight(topic.talk_text, searchTerm)}
                         />
                       </div>
@@ -1365,9 +1364,8 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                     <div className="w-full">
                       <div className="bg-gray-50 rounded-lg p-3 w-full max-w-full overflow-hidden">
                         <div
-                          className={`text-sm text-gray-800 break-words prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${
-                            !expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
-                          }`}
+                          className={`text-sm text-gray-800 break-words prose prose-sm max-w-none prose-p:my-1 prose-strong:text-gray-900 prose-a:text-blue-600 ${!expandedContent.has(topic.topic_id) ? 'line-clamp-8' : ''
+                            }`}
                           dangerouslySetInnerHTML={createSafeHtmlWithHighlight(topic.title, searchTerm)}
                         />
                       </div>
@@ -1414,7 +1412,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
 
             {/* 话题文件 */}
             {topicDetail?.talk?.files && topicDetail.talk.files.length > 0 && (
-              <div className="space-y-2 w-full max-w-full overflow-hidden" style={{width: '100%', maxWidth: '100%', boxSizing: 'border-box'}}>
+              <div className="space-y-2 w-full max-w-full overflow-hidden" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
                 <div className="space-y-2">
                   {topicDetail.talk.files.map((file: any) => {
                     // 根据文件扩展名获取图标组件
@@ -1471,11 +1469,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                     const isDownloaded = fileStatus?.is_complete || false;
 
                     return (
-                      <div key={file.file_id} className={`flex items-center gap-3 p-3 rounded-lg border ${
-                        isDownloaded
-                          ? 'bg-green-50 border-green-200'
-                          : 'bg-gray-50 border-gray-200'
-                      }`}>
+                      <div key={file.file_id} className={`flex items-center gap-3 p-3 rounded-lg border ${isDownloaded
+                        ? 'bg-green-50 border-green-200'
+                        : 'bg-gray-50 border-gray-200'
+                        }`}>
                         <div className="flex-shrink-0">
                           {getFileIcon(file.name)}
                         </div>
@@ -1493,12 +1490,11 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                             )}
                             {/* 文件状态显示 */}
                             {fileStatus && (
-                              <span className={`• ${
-                                fileStatus.download_status === 'not_collected' ? 'text-gray-500' :
+                              <span className={`• ${fileStatus.download_status === 'not_collected' ? 'text-gray-500' :
                                 fileStatus.is_complete ? 'text-green-600' : 'text-orange-600'
-                              }`}>
+                                }`}>
                                 {fileStatus.download_status === 'not_collected' ? '未收集' :
-                                 fileStatus.is_complete ? '已下载' : '未下载'}
+                                  fileStatus.is_complete ? '已下载' : '未下载'}
                               </span>
                             )}
                           </div>
@@ -1590,128 +1586,128 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                   </div>
                   <div className="space-y-2">
                     {commentsToShow.map((comment: any) => (
-                    <div key={comment.comment_id} className="bg-gray-50 rounded-lg p-2">
-                      <div className="flex items-center gap-2 mb-1">
-                        <img
-                          src={apiClient.getProxyImageUrl(comment.owner.avatar_url, groupId.toString())}
-                          alt={comment.owner.name}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-4 h-4 rounded-full object-cover block"
-                          onError={(e) => {
-                            e.currentTarget.src = '/default-avatar.png';
-                          }}
-                        />
-                        <span className="text-xs font-medium text-gray-700">
-                          {comment.owner.name}
-                        </span>
-                        {/* 显示回复关系 */}
-                        {comment.repliee && (
-                          <>
-                            <span className="text-xs text-gray-400">回复</span>
-                            <span className="text-xs font-medium text-blue-600">
-                              {comment.repliee.name}
-                            </span>
-                          </>
-                        )}
-                        <span className="text-xs text-gray-500">
-                          {formatDateTime(comment.create_time)}
-                        </span>
-                      </div>
-                      <div
-                        className="text-xs text-gray-600 ml-6 break-words prose prose-xs max-w-none prose-a:text-blue-600"
-                        dangerouslySetInnerHTML={createSafeHtmlWithHighlight(comment.text, searchTerm)}
-                      />
-
-                      {/* 评论图片 */}
-                      {comment.images && comment.images.length > 0 && (
-                        <div className="ml-6 mt-2">
-                          <ImageGallery
-                            images={comment.images}
-                            className="comment-images"
-                            size="small"
-                            groupId={groupId.toString()}
-                          />
-                        </div>
-                      )}
-
-                      {/* 嵌套回复评论（二级评论） */}
-                      {comment.replied_comments && comment.replied_comments.length > 0 && (
-                        <div className="ml-6 mt-2 space-y-2 border-l-2 border-gray-200 pl-3">
-                          {comment.replied_comments.map((reply: any) => (
-                            <div key={reply.comment_id} className="bg-white rounded p-2">
-                              <div className="flex items-center gap-2 mb-1">
-                                {reply.owner && (
-                                  <img
-                                    src={apiClient.getProxyImageUrl(reply.owner.avatar_url || '', groupId.toString())}
-                                    alt={reply.owner.name}
-                                    loading="lazy"
-                                    decoding="async"
-                                    className="w-3 h-3 rounded-full object-cover block"
-                                    onError={(e) => {
-                                      (e.currentTarget as HTMLImageElement).style.display = 'none';
-                                    }}
-                                  />
-                                )}
-                                <span className="text-xs font-medium text-gray-600">
-                                  {reply.owner?.name || '未知用户'}
-                                </span>
-                                {reply.repliee && (
-                                  <>
-                                    <span className="text-xs text-gray-400">回复</span>
-                                    <span className="text-xs font-medium text-blue-500">
-                                      {reply.repliee.name}
-                                    </span>
-                                  </>
-                                )}
-                                <span className="text-xs text-gray-400">
-                                  {formatDateTime(reply.create_time)}
-                                </span>
-                              </div>
-                              <div
-                                className="text-xs text-gray-500 ml-5 break-words prose prose-xs max-w-none prose-a:text-blue-600"
-                                dangerouslySetInnerHTML={createSafeHtmlWithHighlight(reply.text || '', searchTerm)}
-                              />
-                              {/* 嵌套回复图片 */}
-                              {reply.images && reply.images.length > 0 && (
-                                <div className="ml-5 mt-1">
-                                  <ImageGallery
-                                    images={reply.images}
-                                    className="reply-images"
-                                    size="small"
-                                    groupId={groupId.toString()}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                    {(() => {
-                      // 修复展开收起按钮逻辑
-                      const isExpanded = expandedComments.has(topic.topic_id);
-                      const hasMoreComments = topicDetail.show_comments.length > visibleCommentCount;
-                      const shouldShowToggle = isExpanded || hasMoreComments;
-
-                      return shouldShowToggle && (
-                        <div className="text-center mt-2">
-                          <button type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              toggleComments(topic.topic_id);
+                      <div key={comment.comment_id} className="bg-gray-50 rounded-lg p-2">
+                        <div className="flex items-center gap-2 mb-1">
+                          <img
+                            src={apiClient.getProxyImageUrl(comment.owner.avatar_url, groupId.toString())}
+                            alt={comment.owner.name}
+                            loading="lazy"
+                            decoding="async"
+                            className="w-4 h-4 rounded-full object-cover block"
+                            onError={(e) => {
+                              e.currentTarget.src = '/default-avatar.png';
                             }}
-                            className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                          >
-                            {isExpanded ? '收起' : `展开全部 (${topicDetail.show_comments.length - visibleCommentCount}条)`}
-                          </button>
+                          />
+                          <span className="text-xs font-medium text-gray-700">
+                            {comment.owner.name}
+                          </span>
+                          {/* 显示回复关系 */}
+                          {comment.repliee && (
+                            <>
+                              <span className="text-xs text-gray-400">回复</span>
+                              <span className="text-xs font-medium text-blue-600">
+                                {comment.repliee.name}
+                              </span>
+                            </>
+                          )}
+                          <span className="text-xs text-gray-500">
+                            {formatDateTime(comment.create_time)}
+                          </span>
                         </div>
-                      );
-                    })()}
+                        <div
+                          className="text-xs text-gray-600 ml-6 break-words prose prose-xs max-w-none prose-a:text-blue-600"
+                          dangerouslySetInnerHTML={createSafeHtmlWithHighlight(comment.text, searchTerm)}
+                        />
+
+                        {/* 评论图片 */}
+                        {comment.images && comment.images.length > 0 && (
+                          <div className="ml-6 mt-2">
+                            <ImageGallery
+                              images={comment.images}
+                              className="comment-images"
+                              size="small"
+                              groupId={groupId.toString()}
+                            />
+                          </div>
+                        )}
+
+                        {/* 嵌套回复评论（二级评论） */}
+                        {comment.replied_comments && comment.replied_comments.length > 0 && (
+                          <div className="ml-6 mt-2 space-y-2 border-l-2 border-gray-200 pl-3">
+                            {comment.replied_comments.map((reply: any) => (
+                              <div key={reply.comment_id} className="bg-white rounded p-2">
+                                <div className="flex items-center gap-2 mb-1">
+                                  {reply.owner && (
+                                    <img
+                                      src={apiClient.getProxyImageUrl(reply.owner.avatar_url || '', groupId.toString())}
+                                      alt={reply.owner.name}
+                                      loading="lazy"
+                                      decoding="async"
+                                      className="w-3 h-3 rounded-full object-cover block"
+                                      onError={(e) => {
+                                        (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                      }}
+                                    />
+                                  )}
+                                  <span className="text-xs font-medium text-gray-600">
+                                    {reply.owner?.name || '未知用户'}
+                                  </span>
+                                  {reply.repliee && (
+                                    <>
+                                      <span className="text-xs text-gray-400">回复</span>
+                                      <span className="text-xs font-medium text-blue-500">
+                                        {reply.repliee.name}
+                                      </span>
+                                    </>
+                                  )}
+                                  <span className="text-xs text-gray-400">
+                                    {formatDateTime(reply.create_time)}
+                                  </span>
+                                </div>
+                                <div
+                                  className="text-xs text-gray-500 ml-5 break-words prose prose-xs max-w-none prose-a:text-blue-600"
+                                  dangerouslySetInnerHTML={createSafeHtmlWithHighlight(reply.text || '', searchTerm)}
+                                />
+                                {/* 嵌套回复图片 */}
+                                {reply.images && reply.images.length > 0 && (
+                                  <div className="ml-5 mt-1">
+                                    <ImageGallery
+                                      images={reply.images}
+                                      className="reply-images"
+                                      size="small"
+                                      groupId={groupId.toString()}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
+                  {(() => {
+                    // 修复展开收起按钮逻辑
+                    const isExpanded = expandedComments.has(topic.topic_id);
+                    const hasMoreComments = topicDetail.show_comments.length > visibleCommentCount;
+                    const shouldShowToggle = isExpanded || hasMoreComments;
+
+                    return shouldShowToggle && (
+                      <div className="text-center mt-2">
+                        <button type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleComments(topic.topic_id);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                        >
+                          {isExpanded ? '收起' : `展开全部 (${topicDetail.show_comments.length - visibleCommentCount}条)`}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </div>
               );
             })()}
 
@@ -1961,7 +1957,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                       <span className="text-gray-500 block">到期时间</span>
                       <span className={
                         group.status === 'expiring_soon' ? 'text-yellow-600 font-medium' :
-                        group.status === 'expired' ? 'text-red-600 font-medium' : 'text-gray-900 font-medium'
+                          group.status === 'expired' ? 'text-red-600 font-medium' : 'text-gray-900 font-medium'
                       }>
                         {formatDate(group.expiry_time)}
                       </span>
@@ -2043,7 +2039,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                       </Button>
                     )}
                   </div>
-                  
+
                   {tagsLoading ? (
                     <div className="text-xs text-gray-500">加载标签中...</div>
                   ) : tags.length === 0 ? (
@@ -2058,11 +2054,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                               setSelectedTag(selectedTag === tag.tag_id ? null : tag.tag_id);
                               setCurrentPage(1);
                             }}
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium transition-colors ${
-                              selectedTag === tag.tag_id
-                                ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'
-                            }`}
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium transition-colors ${selectedTag === tag.tag_id
+                              ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'
+                              }`}
                           >
                             {tag.tag_name}
                             <span className="ml-1 text-xs opacity-75">({tag.topic_count})</span>
@@ -2082,10 +2077,14 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
           <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
             {/* 固定的标签页头部 */}
             <div className="flex-shrink-0 mb-4">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="topics" className="flex items-center gap-2">
                   <MessageSquare className="h-4 w-4" />
                   话题列表
+                </TabsTrigger>
+                <TabsTrigger value="stocks" className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4" />
+                  股票分析
                 </TabsTrigger>
                 <TabsTrigger value="logs" className="flex items-center gap-2">
                   <FileText className="h-4 w-4" />
@@ -2112,9 +2111,9 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                   <>
                     {/* 使用ScrollArea组件实现美化的滚动条 */}
                     <ScrollArea ref={scrollAreaRef} className="flex-1 w-full">
-                      <div className="topic-cards-container space-y-3 pr-4 max-w-full" style={{width: '100%', maxWidth: '100%', boxSizing: 'border-box'}}>
+                      <div className="topic-cards-container space-y-3 pr-4 max-w-full" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
                         {topics.map((topic: any) => (
-                          <div key={topic.topic_id} style={{width: '100%', maxWidth: '100%', boxSizing: 'border-box'}}>
+                          <div key={topic.topic_id} style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
                             <TopicCard
                               topic={topic}
                               searchTerm={searchTerm}
@@ -2199,6 +2198,11 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
               </div>
             </TabsContent>
 
+            {/* 股票分析内容区域 */}
+            <TabsContent value="stocks" className="flex-1 flex flex-col min-h-0">
+              <StockDashboard groupId={groupId} />
+            </TabsContent>
+
             {/* 任务日志区域 */}
             <TabsContent value="logs" className="flex-1 flex flex-col min-h-0">
               <div className="flex-1 min-h-0">
@@ -2274,11 +2278,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
 
                       {/* 全量爬取 */}
                       <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedCrawlOption === 'all'
-                            ? 'bg-orange-50 border-orange-200'
-                            : 'border-gray-200 hover:bg-gray-50'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedCrawlOption === 'all'
+                          ? 'bg-orange-50 border-orange-200'
+                          : 'border-gray-200 hover:bg-gray-50'
+                          }`}
                         onClick={() => setSelectedCrawlOption('all')}
                       >
                         <div className="flex items-center justify-between mb-2">
@@ -2329,11 +2332,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
 
                       {/* 获取最新记录 */}
                       <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedCrawlOption === 'latest'
-                            ? 'bg-blue-50 border-blue-200'
-                            : 'border-gray-200 hover:bg-gray-50'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedCrawlOption === 'latest'
+                          ? 'bg-blue-50 border-blue-200'
+                          : 'border-gray-200 hover:bg-gray-50'
+                          }`}
                         onClick={() => {
                           setSelectedCrawlOption('latest');
                           setLatestDialogOpen(true);
@@ -2437,113 +2439,111 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                             </AlertDialogContent>
                           </AlertDialog>
                         )}
-                      {/* 按时间区间爬取 */}
-                      {false && (
-                      <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedCrawlOption === 'range'
-                            ? 'bg-teal-50 border-teal-200'
-                            : 'border-gray-200 hover:bg-gray-50'
-                        }`}
-                        onClick={() => setSelectedCrawlOption('range')}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <Calendar className={`h-3 w-3 ${selectedCrawlOption === 'range' ? 'text-teal-600' : 'text-gray-400'}`} />
-                            <span className={`text-xs font-medium ${selectedCrawlOption === 'range' ? 'text-teal-700' : 'text-gray-600'}`}>
-                              按时间区间
-                            </span>
-                          </div>
-                        </div>
-
-                        {selectedCrawlOption === 'range' && (
-                          <div className="space-y-2">
-                            <div className="text-xs text-gray-600">快速选择</div>
-                            <div className="flex items-center gap-2">
-                              <Input
-                                type="number"
-                                min={1}
-                                value={quickLastDays}
-                                onChange={(e) => setQuickLastDays(parseInt(e.target.value || '1'))}
-                                onClick={(e) => e.stopPropagation()}
-                                className="h-7 text-xs w-24"
-                                placeholder="天数"
-                              />
-                              <span className="text-xs text-gray-500">天</span>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs"
-                                onClick={(e) => { e.stopPropagation(); setQuickLastDays(3); }}
-                              >
-                                3天
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs"
-                                onClick={(e) => { e.stopPropagation(); setQuickLastDays(7); }}
-                              >
-                                7天
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs"
-                                onClick={(e) => { e.stopPropagation(); setQuickLastDays(30); }}
-                              >
-                                30天
-                              </Button>
+                        {/* 按时间区间爬取 */}
+                        {false && (
+                          <div
+                            className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedCrawlOption === 'range'
+                              ? 'bg-teal-50 border-teal-200'
+                              : 'border-gray-200 hover:bg-gray-50'
+                              }`}
+                            onClick={() => setSelectedCrawlOption('range')}
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <Calendar className={`h-3 w-3 ${selectedCrawlOption === 'range' ? 'text-teal-600' : 'text-gray-400'}`} />
+                                <span className={`text-xs font-medium ${selectedCrawlOption === 'range' ? 'text-teal-700' : 'text-gray-600'}`}>
+                                  按时间区间
+                                </span>
+                              </div>
                             </div>
 
-                            <div className="text-[10px] text-gray-400">或 自定义日期范围</div>
-                            <div className="flex items-center gap-2">
-                              <Input
-                                type="date"
-                                value={rangeStartDate}
-                                onChange={(e) => setRangeStartDate(e.target.value)}
-                                onClick={(e) => e.stopPropagation()}
-                                className="h-7 text-xs"
-                              />
-                              <span className="text-xs text-gray-500">~</span>
-                              <Input
-                                type="date"
-                                value={rangeEndDate}
-                                onChange={(e) => setRangeEndDate(e.target.value)}
-                                onClick={(e) => e.stopPropagation()}
-                                className="h-7 text-xs"
-                              />
-                            </div>
+                            {selectedCrawlOption === 'range' && (
+                              <div className="space-y-2">
+                                <div className="text-xs text-gray-600">快速选择</div>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    value={quickLastDays}
+                                    onChange={(e) => setQuickLastDays(parseInt(e.target.value || '1'))}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-7 text-xs w-24"
+                                    placeholder="天数"
+                                  />
+                                  <span className="text-xs text-gray-500">天</span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={(e) => { e.stopPropagation(); setQuickLastDays(3); }}
+                                  >
+                                    3天
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={(e) => { e.stopPropagation(); setQuickLastDays(7); }}
+                                  >
+                                    7天
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={(e) => { e.stopPropagation(); setQuickLastDays(30); }}
+                                  >
+                                    30天
+                                  </Button>
+                                </div>
 
-                            <Button
-                              size="sm"
-                              className="w-full h-7 text-xs bg-teal-600 hover:bg-teal-700"
-                              onClick={(e) => { e.stopPropagation(); handleCrawlRange(); }}
-                              disabled={!!crawlLoading}
-                            >
-                              {crawlLoading === 'range' ? '执行中...' : '开始'}
-                            </Button>
+                                <div className="text-[10px] text-gray-400">或 自定义日期范围</div>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="date"
+                                    value={rangeStartDate}
+                                    onChange={(e) => setRangeStartDate(e.target.value)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-7 text-xs"
+                                  />
+                                  <span className="text-xs text-gray-500">~</span>
+                                  <Input
+                                    type="date"
+                                    value={rangeEndDate}
+                                    onChange={(e) => setRangeEndDate(e.target.value)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-7 text-xs"
+                                  />
+                                </div>
 
-                            <div className="text-[10px] text-gray-400">
-                              未选择日期时，将按最近 {quickLastDays} 天执行
-                            </div>
+                                <Button
+                                  size="sm"
+                                  className="w-full h-7 text-xs bg-teal-600 hover:bg-teal-700"
+                                  onClick={(e) => { e.stopPropagation(); handleCrawlRange(); }}
+                                  disabled={!!crawlLoading}
+                                >
+                                  {crawlLoading === 'range' ? '执行中...' : '开始'}
+                                </Button>
+
+                                <div className="text-[10px] text-gray-400">
+                                  未选择日期时，将按最近 {quickLastDays} 天执行
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
-                      </div>
-                      )}
-                      
-                      {/* 数据管理 */}
+
+                        {/* 数据管理 */}
                       </div>
 
                       {/* 增量爬取 */}
                       <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedCrawlOption === 'incremental'
-                            ? 'bg-green-50 border-green-200'
-                            : (!groupStats || groupStats.topics_count === 0)
-                              ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed'
-                              : 'border-gray-200 hover:bg-gray-50'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedCrawlOption === 'incremental'
+                          ? 'bg-green-50 border-green-200'
+                          : (!groupStats || groupStats.topics_count === 0)
+                            ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed'
+                            : 'border-gray-200 hover:bg-gray-50'
+                          }`}
                         onClick={() => {
                           if (!groupStats || groupStats.topics_count === 0) {
                             toast.error('数据库为空，请先执行全量爬取');
@@ -2642,11 +2642,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                     <div className="space-y-2">
                       {/* 按时间下载 */}
                       <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedDownloadOption === 'time'
-                            ? 'bg-purple-50 border-purple-200'
-                            : 'border-gray-200 hover:bg-gray-50'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedDownloadOption === 'time'
+                          ? 'bg-purple-50 border-purple-200'
+                          : 'border-gray-200 hover:bg-gray-50'
+                          }`}
                         onClick={() => setSelectedDownloadOption('time')}
                       >
                         <div className="flex items-center justify-between mb-2">
@@ -2661,7 +2660,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                           <Button
                             size="sm"
                             className="w-full h-7 text-xs bg-purple-600 hover:bg-purple-700"
-                      
+
                             onClick={handleDownloadByTime}
                             disabled={!!fileLoading}
                           >
@@ -2672,11 +2671,10 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
 
                       {/* 按热度下载 */}
                       <div
-                        className={`border rounded-lg p-3 cursor-pointer transition-all ${
-                          selectedDownloadOption === 'count'
-                            ? 'bg-indigo-50 border-indigo-200'
-                            : 'border-gray-200 hover:bg-gray-50'
-                        }`}
+                        className={`border rounded-lg p-3 cursor-pointer transition-all ${selectedDownloadOption === 'count'
+                          ? 'bg-indigo-50 border-indigo-200'
+                          : 'border-gray-200 hover:bg-gray-50'
+                          }`}
                         onClick={() => setSelectedDownloadOption('count')}
                       >
                         <div className="flex items-center justify-between mb-2">
@@ -2721,7 +2719,7 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                         <div className="mt-2 text-xs text-gray-500 space-y-1">
                           <div>
                             下载间隔: {downloadIntervalMin}-{downloadIntervalMax}秒 |
-                            长休眠: {Math.floor(longSleepIntervalMin/60)}-{Math.floor(longSleepIntervalMax/60)}分钟 |
+                            长休眠: {Math.floor(longSleepIntervalMin / 60)}-{Math.floor(longSleepIntervalMax / 60)}分钟 |
                             批次: {filesPerBatch}个文件
                           </div>
                           <div className="text-gray-400">
@@ -2826,6 +2824,6 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
         onSettingsChange={handleCrawlSettingsChange}
       />
 
-      </div>
+    </div>
   );
 }
