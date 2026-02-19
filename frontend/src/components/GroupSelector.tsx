@@ -1,24 +1,24 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Users, MessageSquare, Crown, UserCog, RefreshCw, Trash2 } from 'lucide-react';
+import { MessageSquare, Crown, UserCog, RefreshCw, Trash2 } from 'lucide-react';
 import { apiClient, Group, GroupStats, AccountSelf } from '@/lib/api';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import SafeImage from './SafeImage';
 import '../styles/group-selector.css';
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface GroupSelectorProps {
-  onGroupSelected: (group: Group) => void;
 }
 
-export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
+export default function GroupSelector({ }: GroupSelectorProps) {
   const router = useRouter();
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupStats, setGroupStats] = useState<Record<number, GroupStats>>({});
@@ -26,53 +26,21 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
-  const [accountSelfMap, setAccountSelfMap] = useState<Record<number, AccountSelf | null>>({});
+  const [, setAccountSelfMap] = useState<Record<number, AccountSelf | null>>({});
   const [deletingGroups, setDeletingGroups] = useState<Set<number>>(new Set());
 
-  useEffect(() => {
-    loadGroups();
-  }, []);
+  const loadGroups = useCallback(async (currentRetryCount: number | React.MouseEvent = 0) => {
+    const retryCountValue = typeof currentRetryCount === 'number' ? currentRetryCount : 0;
 
-  // 监听页面可见性变化和窗口焦点，返回页面时自动刷新群组列表
-  // 使用节流避免频繁刷新
-  useEffect(() => {
-    let lastRefresh = 0;
-    const REFRESH_INTERVAL = 5000; // 最少间隔 5 秒
-
-    const maybeRefresh = () => {
-      const now = Date.now();
-      if (now - lastRefresh > REFRESH_INTERVAL) {
-        lastRefresh = now;
-        loadGroups(0);
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        maybeRefresh();
-      }
-    };
-    const handleFocus = () => {
-      maybeRefresh();
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleFocus);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, []);
-
-  const loadGroups = async (currentRetryCount = 0) => {
     try {
-      if (currentRetryCount === 0) {
+      if (retryCountValue === 0) {
         setLoading(true);
         setError(null);
         setRetryCount(0);
         setIsRetrying(false);
       } else {
         setIsRetrying(true);
-        setRetryCount(currentRetryCount);
+        setRetryCount(retryCountValue);
       }
 
       const data = await apiClient.getGroups();
@@ -86,7 +54,7 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
         const selfPromises = data.groups.map(async (group: Group) => {
           try {
             const res = await apiClient.getGroupAccountSelf(group.group_id);
-            return { groupId: group.group_id, self: (res as any)?.self || null };
+            return { groupId: group.group_id, self: (res as { self: AccountSelf | null })?.self || null };
           } catch {
             return { groupId: group.group_id, self: null };
           }
@@ -133,7 +101,7 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
 
       // 如果是API保护机制导致的错误，持续重试
       if (errorMessage.includes('未知错误') || errorMessage.includes('空数据') || errorMessage.includes('反爬虫')) {
-        const nextRetryCount = currentRetryCount + 1;
+        const nextRetryCount = retryCountValue + 1;
         const delay = Math.min(1000 + (nextRetryCount * 500), 5000); // 递增延迟，最大5秒
 
         console.log(`群组列表加载失败，正在重试 (第${nextRetryCount}次)...`);
@@ -149,7 +117,41 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
       setIsRetrying(false);
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadGroups();
+  }, [loadGroups]);
+
+  // 监听页面可见性变化和窗口焦点，返回页面时自动刷新群组列表
+  // 使用节流避免频繁刷新
+  useEffect(() => {
+    let lastRefresh = 0;
+    const REFRESH_INTERVAL = 5000; // 最少间隔 5 秒
+
+    const maybeRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefresh > REFRESH_INTERVAL) {
+        lastRefresh = now;
+        loadGroups(0);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        maybeRefresh();
+      }
+    };
+    const handleFocus = () => {
+      maybeRefresh();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [loadGroups]);
 
 
 
@@ -169,7 +171,7 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
     setDeletingGroups((prev) => new Set(prev).add(groupId));
     try {
       const res = await apiClient.deleteGroup(groupId);
-      const msg = (res as any)?.message || '已删除';
+      const msg = (res as { message?: string })?.message || '已删除';
       toast.success(msg);
       await loadGroups(0);
     } catch (err) {
@@ -184,14 +186,7 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
     }
   };
 
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return '';
-    try {
-      return new Date(dateString).toLocaleDateString('zh-CN');
-    } catch {
-      return '';
-    }
-  };
+
 
   const getGradientByType = (type: string) => {
     switch (type) {

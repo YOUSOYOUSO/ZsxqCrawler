@@ -50,7 +50,7 @@ export default function AccountPanel() {
         const result = results.find(r => r.id === acc.id);
         return { ...acc, selfInfo: result?.selfInfo || null, loadingSelf: false };
       }));
-    } catch (e) {
+    } catch {
       toast.error('加载账号列表失败');
     } finally {
       setLoading(false);
@@ -74,8 +74,8 @@ export default function AccountPanel() {
       setName('');
       setCreateOpen(false);
       await loadAccounts();
-    } catch (e: any) {
-      toast.error(`添加失败: ${e?.message || '未知错误'}`);
+    } catch (e) {
+      toast.error(`添加失败: ${e instanceof Error ? e.message : '未知错误'}`);
     } finally {
       setCreating(false);
     }
@@ -87,8 +87,8 @@ export default function AccountPanel() {
       await apiClient.deleteAccount(id);
       toast.success('账号已删除');
       await loadAccounts();
-    } catch (e: any) {
-      toast.error(`删除失败: ${e?.message || '未知错误'}`);
+    } catch (e) {
+      toast.error(`删除失败: ${e instanceof Error ? e.message : '未知错误'}`);
     }
   };
 
@@ -104,8 +104,8 @@ export default function AccountPanel() {
         acc.id === id ? { ...acc, selfInfo: res?.self || null, loadingSelf: false } : acc
       ));
       toast.success('信息已刷新');
-    } catch (e: any) {
-      toast.error(`刷新失败: ${e?.message || '未知错误'}`);
+    } catch (e) {
+      toast.error(`刷新失败: ${e instanceof Error ? e.message : '未知错误'}`);
       setAccounts(prev => prev.map(acc =>
         acc.id === id ? { ...acc, loadingSelf: false } : acc
       ));

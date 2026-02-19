@@ -90,7 +90,14 @@ class AIAnalyzer:
 
     def __init__(self, db_path: str = None, group_id: str = None):
         self.group_id = group_id
-        self.db_path = db_path
+        
+        # 如果没有提供 db_path 且没有 group_id，则假定为全局模式，使用全局 AI 数据库
+        if not db_path and not group_id:
+            from db_path_manager import get_db_path_manager
+            self.db_path = get_db_path_manager().get_global_ai_db_path()
+        else:
+            self.db_path = db_path
+            
         self._api_key: Optional[str] = None
         self._base_url: str = "https://api.deepseek.com"
         self._model: str = "deepseek-chat"
@@ -99,6 +106,156 @@ class AIAnalyzer:
         # 初始化 AI 缓存表
         if self.db_path:
             self._init_ai_tables()
+            
+    # ... (Keep existing methods) ...
+
+    def generate_global_daily_brief(self, lookback_days: int = 7, force: bool = False) -> Dict[str, Any]:
+        """生成全局每日投资简报"""
+        today = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+        cache_key = f"global_daily_{today}"
+
+        if not force:
+            cached = self._get_cached('global_daily', cache_key, max_age_hours=12)
+            if cached:
+                return {
+                    'content': cached['content'],
+                    'model': cached['model'],
+                    'tokens_used': cached['tokens_used'],
+                    'created_at': cached['created_at'],
+                    'from_cache': True
+                }
+
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+
+        signals = analyzer.get_global_signals(lookback_days=lookback_days, min_mentions=2)
+        stats = analyzer.get_global_stats()
+
+        if not signals:
+            return {'error': '近期全局无显著信号数据', 'content': None}
+
+        signals_text = ""
+        for s in signals[:20]:
+            avg = f"{s['avg_return']}%" if s.get('avg_return') is not None else '—'
+            weight = s.get('consensus_weight', 0)
+            signals_text += f"- **{s['stock_name']}** ({s['stock_code']}): 提及{s['mention_count']}次, 涉及{s['group_count']}个群组, 权重{weight}, 均收益{avg}\n"
+
+        # 调整 Prompt 以适应全局视角
+        GLOBAL_BRIEF_PROMPT = """你是一位专业的投资研究助理。请根据以下全市场范围的股票信号数据，撰写一份简明的每日投资观察简报。
+
+## 近期全市场高频信号（近{lookback_days}天内跨群组频繁提及）
+{signals_text}
+
+## 整体统计
+- 总提及数: {total_mentions}
+- 涉及股票数: {unique_stocks}
+- 涉及群组数: {group_count}
+
+## 简报要求
+请从以下角度撰写：
+1. **市场共识** — 多个群组同时关注的热点方向和个股
+2. **重点机会** — 基于跨群组共识度，哪些值得重点跟踪？
+3. **风险提醒** — 需要警惕的异常拥挤或过热信号
+4. **操作建议** — 基于数据的理性建议（不构成投资建议）
+
+请用 Markdown 格式输出，保持简洁（不超过800字）。标记重要观点。
+"""
+
+        prompt = GLOBAL_BRIEF_PROMPT.format(
+            lookback_days=lookback_days,
+            signals_text=signals_text,
+            total_mentions=stats.get('total_mentions', 0),
+            unique_stocks=stats.get('unique_stocks', 0),
+            group_count=stats.get('group_count', 0)
+        )
+
+        result = self._call_deepseek(
+            system_prompt="你是一位专业的投资研究助理，擅长从海量舆情数据中提炼市场共识。",
+            user_prompt=prompt
+        )
+
+        if result.get('error'):
+            return result
+
+        self._save_cache('global_daily', cache_key, result['content'],
+                         result['model'], result['tokens_used'])
+
+        return {
+            'date': today,
+            'content': result['content'],
+            'model': result['model'],
+            'tokens_used': result['tokens_used'],
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'from_cache': False
+        }
+
+    def analyze_global_consensus(self, top_n: int = 15, force: bool = False) -> Dict[str, Any]:
+        """全局共识分析"""
+        today = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+        cache_key = f"global_consensus_{today}"
+
+        if not force:
+            cached = self._get_cached('global_consensus', cache_key, max_age_hours=12)
+            if cached:
+                return {
+                    'content': cached['content'],
+                    'model': cached['model'],
+                    'tokens_used': cached['tokens_used'],
+                    'created_at': cached['created_at'],
+                    'from_cache': True
+                }
+
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+
+        ranking = analyzer.get_global_win_rate(min_mentions=2, limit=top_n)
+
+        if not ranking:
+            return {'error': '暂无足够的全局数据进行共识分析', 'content': None}
+
+        stocks_text = "| 股票 | 代码 | 提及次数 | 涉及群组 | 胜率 | 平均收益 |\n"
+        stocks_text += "|---|---|---|---|---|---|\n"
+        for r in ranking:
+            stocks_text += (
+                f"| {r['stock_name']} | {r['stock_code']} | {r['mention_count']} | "
+                f"{r['group_count']} | {r['win_rate']}% | {r['avg_return']}% |\n"
+            )
+
+        GLOBAL_CONSENSUS_PROMPT = """你是一位专业的量化分析师。请对比分析以下全市场热门股票的数据，寻找市场最强的共识。
+
+## 全市场热门股票数据
+{stocks_text}
+
+## 分析要求
+1. **核心共识** — 哪些股票在多个群组中均被提及且表现优异？
+2. **板块效应** — 市场资金主要集中在哪些板块？
+3. **最强标的** — 综合胜率、收益和覆盖面，选出3只最值得关注的标的
+4. **要点总结** — 3-5条核心结论
+
+请用 Markdown 格式输出，不超过600字。用表格展示对比数据。
+"""
+
+        prompt = GLOBAL_CONSENSUS_PROMPT.format(stocks_text=stocks_text)
+
+        result = self._call_deepseek(
+            system_prompt="你是一位专业的量化分析师，擅长发现跨群组的市场共识。",
+            user_prompt=prompt
+        )
+
+        if result.get('error'):
+            return result
+
+        self._save_cache('global_consensus', cache_key, result['content'],
+                         result['model'], result['tokens_used'])
+
+        return {
+            'content': result['content'],
+            'model': result['model'],
+            'tokens_used': result['tokens_used'],
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'from_cache': False,
+            'stocks_analyzed': len(ranking)
+        }
 
     def _load_config(self):
         """从 config.toml 或环境变量加载 AI 配置"""

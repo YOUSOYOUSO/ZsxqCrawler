@@ -38,23 +38,19 @@ export default function CrawlSettingsDialog({
   pagesPerBatch,
   onSettingsChange,
 }: CrawlSettingsDialogProps) {
-  const [localCrawlInterval, setLocalCrawlInterval] = useState(crawlInterval);
-  const [localLongSleepInterval, setLocalLongSleepInterval] = useState(longSleepInterval);
-  const [localPagesPerBatch, setLocalPagesPerBatch] = useState(pagesPerBatch);
+  const [localPagesPerBatch, setLocalPagesPerBatch] = useState<number | ''>(pagesPerBatch);
 
   // 新增范围设置状态
-  const [crawlIntervalMin, setCrawlIntervalMin] = useState(2);
-  const [crawlIntervalMax, setCrawlIntervalMax] = useState(5);
-  const [longSleepIntervalMin, setLongSleepIntervalMin] = useState(180);
-  const [longSleepIntervalMax, setLongSleepIntervalMax] = useState(300);
+  const [crawlIntervalMin, setCrawlIntervalMin] = useState<number | ''>(2);
+  const [crawlIntervalMax, setCrawlIntervalMax] = useState<number | ''>(5);
+  const [longSleepIntervalMin, setLongSleepIntervalMin] = useState<number | ''>(180);
+  const [longSleepIntervalMax, setLongSleepIntervalMax] = useState<number | ''>(300);
   const [useRandomInterval, setUseRandomInterval] = useState(true);
   const [selectedPreset, setSelectedPreset] = useState<'fast' | 'standard' | 'safe' | null>('standard');
 
   // 当对话框打开时，同步当前设置值
   useEffect(() => {
     if (open) {
-      setLocalCrawlInterval(crawlInterval);
-      setLocalLongSleepInterval(longSleepInterval);
       setLocalPagesPerBatch(pagesPerBatch);
 
       // 如果是第一次打开，默认设置为标准配置
@@ -66,11 +62,11 @@ export default function CrawlSettingsDialog({
 
   const handleSave = () => {
     // 确保所有值都有默认值
-    const finalCrawlIntervalMin = crawlIntervalMin || 2;
-    const finalCrawlIntervalMax = crawlIntervalMax || 5;
-    const finalLongSleepIntervalMin = longSleepIntervalMin || 180;
-    const finalLongSleepIntervalMax = longSleepIntervalMax || 300;
-    const finalPagesPerBatch = Math.max(localPagesPerBatch || 15, 5); // 确保最小值为5
+    const finalCrawlIntervalMin = Number(crawlIntervalMin) || 2;
+    const finalCrawlIntervalMax = Number(crawlIntervalMax) || 5;
+    const finalLongSleepIntervalMin = Number(longSleepIntervalMin) || 180;
+    const finalLongSleepIntervalMax = Number(longSleepIntervalMax) || 300;
+    const finalPagesPerBatch = Math.max(Number(localPagesPerBatch) || 15, 5); // 确保最小值为5
 
 
 
@@ -99,8 +95,6 @@ export default function CrawlSettingsDialog({
 
   const handleCancel = () => {
     // 重置为原始值
-    setLocalCrawlInterval(crawlInterval);
-    setLocalLongSleepInterval(longSleepInterval);
     setLocalPagesPerBatch(pagesPerBatch);
     onOpenChange(false);
   };
@@ -226,7 +220,7 @@ export default function CrawlSettingsDialog({
             <p className="text-xs text-gray-500">
               {useRandomInterval
                 ? '每次爬取页面后的随机等待时间范围'
-                : `每次爬取页面后的固定等待时间 (取中间值: ${Math.round((crawlIntervalMin + crawlIntervalMax) / 2)}秒)`
+                : `每次爬取页面后的固定等待时间 (取中间值: ${Math.round((Number(crawlIntervalMin) + Number(crawlIntervalMax)) / 2)}秒)`
               }
             </p>
           </div>
@@ -288,7 +282,7 @@ export default function CrawlSettingsDialog({
             <p className="text-xs text-gray-500">
               {useRandomInterval
                 ? '达到批次大小后的随机长时间休眠范围'
-                : `达到批次大小后的固定长时间休眠 (取中间值: ${Math.round((longSleepIntervalMin + longSleepIntervalMax) / 2)}秒)`
+                : `达到批次大小后的固定长时间休眠 (取中间值: ${Math.round((Number(longSleepIntervalMin) + Number(longSleepIntervalMax)) / 2)}秒)`
               }
             </p>
           </div>
@@ -333,11 +327,10 @@ export default function CrawlSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('fast')}
-                className={`flex-1 ${
-                  selectedPreset === 'fast'
+                className={`flex-1 ${selectedPreset === 'fast'
                     ? 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'
                     : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                  }`}
               >
                 快速
               </Button>
@@ -346,11 +339,10 @@ export default function CrawlSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('standard')}
-                className={`flex-1 ${
-                  selectedPreset === 'standard'
+                className={`flex-1 ${selectedPreset === 'standard'
                     ? 'bg-blue-100 text-blue-800 border-blue-300 hover:bg-blue-200'
                     : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                  }`}
               >
                 标准
               </Button>
@@ -359,11 +351,10 @@ export default function CrawlSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('safe')}
-                className={`flex-1 ${
-                  selectedPreset === 'safe'
+                className={`flex-1 ${selectedPreset === 'safe'
                     ? 'bg-orange-100 text-orange-800 border-orange-300 hover:bg-orange-200'
                     : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                  }`}
               >
                 安全
               </Button>

@@ -1,5 +1,6 @@
 'use client';
 
+
 import { useEffect, useState, useCallback } from 'react';
 import { apiClient } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -810,5 +811,6 @@ function TrendingUp({ className }: { className?: string }) {
             <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
             <polyline points="17 6 23 6 23 12" />
         </svg>
+
     );
 }

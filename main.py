@@ -61,10 +61,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+def _parse_cors_origins() -> List[str]:
+    """
+    解析 CORS 白名单，默认仅允许本地开发端口。
+    通过环境变量 CORS_ALLOW_ORIGINS 以逗号分隔覆盖。
+    """
+    raw = os.environ.get(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3060,http://127.0.0.1:3060"
+    )
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    return origins or ["http://localhost:3060"]
+
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 前端地址
+    allow_origins=_parse_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -237,6 +249,13 @@ class CrawlSettingsRequest(BaseModel):
     longSleepIntervalMax: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最大值(秒)")
     pagesPerBatch: Optional[int] = Field(default=None, ge=5, le=50, description="每批次页面数")
 
+class CrawlBehaviorSettingsRequest(BaseModel):
+    crawl_interval_min: float = Field(default=2.0, ge=1.0, le=60.0)
+    crawl_interval_max: float = Field(default=5.0, ge=1.0, le=60.0)
+    long_sleep_interval_min: float = Field(default=180.0, ge=60.0, le=3600.0)
+    long_sleep_interval_max: float = Field(default=300.0, ge=60.0, le=3600.0)
+    pages_per_batch: int = Field(default=15, ge=5, le=50)
+
 class FileDownloadRequest(BaseModel):
     max_files: Optional[int] = Field(default=None, description="最大下载文件数")
     sort_by: str = Field(default="download_count", description="排序方式: download_count 或 time")
@@ -278,7 +297,7 @@ class GroupInfo(BaseModel):
 
 class TaskResponse(BaseModel):
     task_id: str
-    status: str  # pending, running, completed, failed
+    status: str  # pending, running, completed, failed, cancelled
     message: str
     result: Optional[Dict[str, Any]] = None
     created_at: datetime
@@ -501,6 +520,73 @@ def is_task_stopped(task_id: str) -> bool:
     """检查任务是否被停止"""
     stopped = task_stop_flags.get(task_id, False)
     return stopped
+
+# 应用设置（持久化）
+CRAWL_SETTINGS_DEFAULTS = {
+    "crawl_interval_min": 2.0,
+    "crawl_interval_max": 5.0,
+    "long_sleep_interval_min": 180.0,
+    "long_sleep_interval_max": 300.0,
+    "pages_per_batch": 15,
+}
+
+APP_SETTINGS_PATH = os.path.join(get_db_path_manager().base_dir, "app_settings.json")
+
+
+def _load_app_settings() -> Dict[str, Any]:
+    """读取应用设置（失败时降级为空配置）"""
+    try:
+        if not os.path.exists(APP_SETTINGS_PATH):
+            return {}
+        with open(APP_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log_warning(f"读取应用设置失败，使用默认值: {e}")
+        return {}
+
+
+def _save_app_settings(settings: Dict[str, Any]):
+    """保存应用设置"""
+    os.makedirs(os.path.dirname(APP_SETTINGS_PATH), exist_ok=True)
+    with open(APP_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def _get_crawl_settings() -> Dict[str, Any]:
+    """读取并合并爬取设置"""
+    settings = _load_app_settings()
+    crawl_settings = settings.get("crawl", {}) if isinstance(settings, dict) else {}
+    merged = dict(CRAWL_SETTINGS_DEFAULTS)
+    if isinstance(crawl_settings, dict):
+        merged.update({k: v for k, v in crawl_settings.items() if k in CRAWL_SETTINGS_DEFAULTS})
+    return merged
+
+
+def _update_crawl_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """更新并持久化爬取设置"""
+    all_settings = _load_app_settings()
+    if not isinstance(all_settings, dict):
+        all_settings = {}
+    all_settings["crawl"] = settings
+    _save_app_settings(all_settings)
+    return settings
+
+
+def _resolve_crawl_interval_values(request_obj: Optional[Any]) -> Dict[str, Any]:
+    """
+    计算实际生效的爬取间隔参数：
+    - 优先使用请求里的显式值
+    - 未提供时回退到持久化设置
+    """
+    persisted = _get_crawl_settings()
+    return {
+        "crawl_interval_min": getattr(request_obj, "crawlIntervalMin", None) or persisted["crawl_interval_min"],
+        "crawl_interval_max": getattr(request_obj, "crawlIntervalMax", None) or persisted["crawl_interval_max"],
+        "long_sleep_interval_min": getattr(request_obj, "longSleepIntervalMin", None) or persisted["long_sleep_interval_min"],
+        "long_sleep_interval_max": getattr(request_obj, "longSleepIntervalMax", None) or persisted["long_sleep_interval_max"],
+        "pages_per_batch": getattr(request_obj, "pagesPerBatch", None) or persisted["pages_per_batch"],
+    }
 
 # API路由定义
 @app.get("/")
@@ -971,15 +1057,8 @@ def run_crawl_historical_task(task_id: str, group_id: str, pages: int, per_page:
         # 设置停止检查函数
         crawler.stop_check_func = stop_check
 
-        # 设置自定义间隔参数
-        if crawl_settings:
-            crawler.set_custom_intervals(
-                crawl_interval_min=crawl_settings.crawlIntervalMin,
-                crawl_interval_max=crawl_settings.crawlIntervalMax,
-                long_sleep_interval_min=crawl_settings.longSleepIntervalMin,
-                long_sleep_interval_max=crawl_settings.longSleepIntervalMax,
-                pages_per_batch=crawl_settings.pagesPerBatch
-            )
+        effective_intervals = _resolve_crawl_interval_values(crawl_settings)
+        crawler.set_custom_intervals(**effective_intervals)
 
         # 检查任务是否在设置过程中被停止
         if is_task_stopped(task_id):
@@ -1534,15 +1613,8 @@ async def crawl_all(group_id: str, request: CrawlSettingsRequest, background_tas
                 # 设置停止检查函数
                 crawler.stop_check_func = stop_check
 
-                # 设置自定义间隔参数
-                if crawl_settings:
-                    crawler.set_custom_intervals(
-                        crawl_interval_min=crawl_settings.crawlIntervalMin,
-                        crawl_interval_max=crawl_settings.crawlIntervalMax,
-                        long_sleep_interval_min=crawl_settings.longSleepIntervalMin,
-                        long_sleep_interval_max=crawl_settings.longSleepIntervalMax,
-                        pages_per_batch=crawl_settings.pagesPerBatch
-                    )
+                effective_intervals = _resolve_crawl_interval_values(crawl_settings)
+                crawler.set_custom_intervals(**effective_intervals)
 
                 # 检查任务是否在设置过程中被停止
                 if is_task_stopped(task_id):
@@ -1618,15 +1690,8 @@ async def crawl_incremental(group_id: str, request: CrawlHistoricalRequest, back
                 # 设置停止检查函数
                 crawler.stop_check_func = stop_check
 
-                # 设置自定义间隔参数
-                if crawl_settings:
-                    crawler.set_custom_intervals(
-                        crawl_interval_min=crawl_settings.crawlIntervalMin,
-                        crawl_interval_max=crawl_settings.crawlIntervalMax,
-                        long_sleep_interval_min=crawl_settings.longSleepIntervalMin,
-                        long_sleep_interval_max=crawl_settings.longSleepIntervalMax,
-                        pages_per_batch=crawl_settings.pagesPerBatch
-                    )
+                effective_intervals = _resolve_crawl_interval_values(crawl_settings)
+                crawler.set_custom_intervals(**effective_intervals)
 
                 # 检查任务是否在设置过程中被停止
                 if is_task_stopped(task_id):
@@ -1683,15 +1748,8 @@ async def crawl_latest_until_complete(group_id: str, request: CrawlSettingsReque
                 # 设置停止检查函数
                 crawler.stop_check_func = stop_check
 
-                # 设置自定义间隔参数
-                if crawl_settings:
-                    crawler.set_custom_intervals(
-                        crawl_interval_min=crawl_settings.crawlIntervalMin,
-                        crawl_interval_max=crawl_settings.crawlIntervalMax,
-                        long_sleep_interval_min=crawl_settings.longSleepIntervalMin,
-                        long_sleep_interval_max=crawl_settings.longSleepIntervalMax,
-                        pages_per_batch=crawl_settings.pagesPerBatch
-                    )
+                effective_intervals = _resolve_crawl_interval_values(crawl_settings)
+                crawler.set_custom_intervals(**effective_intervals)
 
                 # 检查任务是否在设置过程中被停止
                 if is_task_stopped(task_id):
@@ -2923,25 +2981,24 @@ async def get_local_video(group_id: str, video_path: str):
 async def get_crawl_settings():
     """获取话题爬取设置"""
     try:
-        # 返回默认设置
-        return {
-            "crawl_interval_min": 2.0,
-            "crawl_interval_max": 5.0,
-            "long_sleep_interval_min": 180.0,
-            "long_sleep_interval_max": 300.0,
-            "pages_per_batch": 15
-        }
+        return _get_crawl_settings()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取爬取设置失败: {str(e)}")
 
 
 @app.post("/api/settings/crawl")
-async def update_crawl_settings(settings: dict):
+async def update_crawl_settings(settings: CrawlBehaviorSettingsRequest):
     """更新话题爬取设置"""
     try:
-        # 这里可以将设置保存到配置文件或数据库
-        # 目前只是返回成功，实际设置通过API参数传递
-        return {"success": True, "message": "爬取设置已更新"}
+        if settings.crawl_interval_min >= settings.crawl_interval_max:
+            raise HTTPException(status_code=400, detail="crawl_interval_min must be less than crawl_interval_max")
+        if settings.long_sleep_interval_min >= settings.long_sleep_interval_max:
+            raise HTTPException(status_code=400, detail="long_sleep_interval_min must be less than long_sleep_interval_max")
+
+        persisted = _update_crawl_settings(settings.model_dump())
+        return {"success": True, "message": "爬取设置已更新", "settings": persisted}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新爬取设置失败: {str(e)}")
 
@@ -3363,8 +3420,12 @@ async def stream_task_logs(task_id: str):
                 yield f"data: {json.dumps({'type': 'log', 'message': log})}\n\n"
 
         # 发送任务状态
+        last_status = None
+        last_message = None
         if task_id in current_tasks:
             task = current_tasks[task_id]
+            last_status = task.get('status')
+            last_message = task.get('message')
             yield f"data: {json.dumps({'type': 'status', 'status': task['status'], 'message': task['message']})}\n\n"
 
         # 记录当前日志数量，用于检测新日志
@@ -3385,9 +3446,16 @@ async def stream_task_logs(task_id: str):
                 # 检查任务状态变化
                 if task_id in current_tasks:
                     task = current_tasks[task_id]
-                    yield f"data: {json.dumps({'type': 'status', 'status': task['status'], 'message': task['message']})}\n\n"
+                    status = task.get('status')
+                    message = task.get('message')
 
-                    if task['status'] in ['completed', 'failed', 'cancelled']:
+                    # 仅在状态或消息发生变化时推送，避免前端持续抖动
+                    if status != last_status or message != last_message:
+                        yield f"data: {json.dumps({'type': 'status', 'status': status, 'message': message})}\n\n"
+                        last_status = status
+                        last_message = message
+
+                    if status in ['completed', 'failed', 'cancelled']:
                         break
 
                 # 发送心跳
@@ -3767,19 +3835,8 @@ def run_crawl_time_range_task(task_id: str, group_id: str, request: "CrawlTimeRa
         crawler = ZSXQInteractiveCrawler(cookie, group_id, db_path, log_callback)
         crawler.stop_check_func = stop_check
 
-        # 可选：应用自定义间隔设置
-        if any([
-            request.crawlIntervalMin, request.crawlIntervalMax,
-            request.longSleepIntervalMin, request.longSleepIntervalMax,
-            request.pagesPerBatch
-        ]):
-            crawler.set_custom_intervals(
-                crawl_interval_min=request.crawlIntervalMin,
-                crawl_interval_max=request.crawlIntervalMax,
-                long_sleep_interval_min=request.longSleepIntervalMin,
-                long_sleep_interval_max=request.longSleepIntervalMax,
-                pages_per_batch=request.pagesPerBatch
-            )
+        effective_intervals = _resolve_crawl_interval_values(request)
+        crawler.set_custom_intervals(**effective_intervals)
 
         per_page = request.perPage or 20
         total_stats = {'new_topics': 0, 'updated_topics': 0, 'errors': 0, 'pages': 0}
@@ -5092,16 +5149,24 @@ from stock_analyzer import StockAnalyzer
 
 
 @app.post("/api/groups/{group_id}/stock/scan")
-async def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: bool = False):
+def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: bool = False):
     """扫描群组帖子，提取股票提及并计算后续表现（后台任务）"""
     task_id = create_task(f"stock_scan_{group_id}", f"股票提及扫描: {group_id}")
 
-    async def _scan_task():
+    def _scan_task():
         try:
             update_task(task_id, "running", "正在扫描...")
             add_task_log(task_id, "🚀 开始股票提及扫描...")
+            add_task_log(task_id, "🧭 分析引擎版本: dict-log-v2")
+            update_task(task_id, "running", "正在准备股票字典...")
 
-            analyzer = StockAnalyzer(group_id, log_callback=lambda msg: add_task_log(task_id, msg))
+            def _log_progress(msg: str):
+                add_task_log(task_id, msg)
+                # 将关键进度同步到任务摘要，便于前端侧边栏展示
+                if any(k in msg for k in ["开始扫描", "已扫描", "开始计算", "已计算", "扫描完成", "全部完成"]):
+                    update_task(task_id, "running", msg)
+
+            analyzer = StockAnalyzer(group_id, log_callback=_log_progress)
             result = analyzer.scan_group(force=force)
 
             add_task_log(task_id, f"✅ 扫描完成: {result['mentions_extracted']} 次提及, {result['unique_stocks']} 只股票")
@@ -5116,8 +5181,17 @@ async def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, fo
     return {"task_id": task_id, "message": "股票扫描任务已启动"}
 
 
+@app.get("/api/groups/{group_id}/stock/topics")
+def get_stock_topics(group_id: str, page: int = 1, per_page: int = 20):
+    """获取按话题分组的股票提及列表"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_topic_mentions(page=page, per_page=per_page)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取话题列表失败: {str(e)}")
+
 @app.get("/api/groups/{group_id}/stock/mentions")
-async def get_stock_mentions(group_id: str, stock_code: str = None,
+def get_stock_mentions(group_id: str, stock_code: str = None,
                               page: int = 1, per_page: int = 50,
                               sort_by: str = 'mention_date', order: str = 'desc'):
     """获取股票提及列表"""
@@ -5130,7 +5204,7 @@ async def get_stock_mentions(group_id: str, stock_code: str = None,
 
 
 @app.get("/api/groups/{group_id}/stock/{stock_code}/events")
-async def get_stock_events(group_id: str, stock_code: str):
+def get_stock_events(group_id: str, stock_code: str):
     """获取某只股票的全部提及事件 + 每次后续表现"""
     try:
         analyzer = StockAnalyzer(group_id)
@@ -5140,7 +5214,7 @@ async def get_stock_events(group_id: str, stock_code: str):
 
 
 @app.get("/api/groups/{group_id}/stock/{stock_code}/price")
-async def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90):
+def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90):
     """获取股票价格走势 + 提及标注点"""
     try:
         analyzer = StockAnalyzer(group_id)
@@ -5150,7 +5224,7 @@ async def get_stock_price_with_mentions(group_id: str, stock_code: str, days: in
 
 
 @app.get("/api/groups/{group_id}/stock/win-rate")
-async def get_stock_win_rate(group_id: str, min_mentions: int = 2,
+def get_stock_win_rate(group_id: str, min_mentions: int = 2,
                               return_period: str = 'return_5d', limit: int = 50):
     """胜率排行榜：按提及后N日正收益率排序"""
     try:
@@ -5162,7 +5236,7 @@ async def get_stock_win_rate(group_id: str, min_mentions: int = 2,
 
 
 @app.get("/api/groups/{group_id}/stock/sector-heat")
-async def get_sector_heatmap(group_id: str):
+def get_sector_heatmap(group_id: str):
     """板块热度分析"""
     try:
         analyzer = StockAnalyzer(group_id)
@@ -5172,7 +5246,7 @@ async def get_sector_heatmap(group_id: str):
 
 
 @app.get("/api/groups/{group_id}/stock/signals")
-async def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2):
+def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2):
     """信号雷达：近期高频提及 + 历史胜率高的股票"""
     try:
         analyzer = StockAnalyzer(group_id)
@@ -5182,7 +5256,7 @@ async def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions:
 
 
 @app.get("/api/groups/{group_id}/stock/stats")
-async def get_stock_stats(group_id: str):
+def get_stock_stats(group_id: str):
     """获取股票分析概览统计"""
     try:
         analyzer = StockAnalyzer(group_id)
@@ -5202,8 +5276,8 @@ class AIConfigModel(BaseModel):
 
 def _get_ai_analyzer(group_id: str) -> AIAnalyzer:
     """获取 AI 分析器实例"""
-    from db_path_manager import get_db_path
-    db_path = get_db_path(group_id)
+    from db_path_manager import get_db_path_manager
+    db_path = get_db_path_manager().get_topics_db_path(group_id)
     return AIAnalyzer(db_path=db_path, group_id=group_id)
 
 
@@ -5395,6 +5469,157 @@ async def global_groups_overview():
         return analyzer.get_groups_overview()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
+
+
+def _get_global_ai_analyzer() -> AIAnalyzer:
+    """获取全局 AI 分析器实例"""
+    # 显式传递 None，由 AIAnalyzer 内部处理为全局模式
+    return AIAnalyzer(db_path=None, group_id=None)
+
+
+@app.post("/api/global/ai/daily-brief")
+async def global_ai_daily_brief(lookback_days: int = 7, force: bool = False):
+    """生成全局每日投资简报"""
+    try:
+        ai = _get_global_ai_analyzer()
+        result = ai.generate_global_daily_brief(lookback_days=lookback_days, force=force)
+        if result.get('error'):
+            raise HTTPException(status_code=400, detail=result['error'])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成全局简报失败: {str(e)}")
+
+
+@app.post("/api/global/ai/consensus")
+async def global_ai_consensus(top_n: int = 15, force: bool = False):
+    """全局共识分析"""
+    try:
+        ai = _get_global_ai_analyzer()
+        result = ai.analyze_global_consensus(top_n=top_n, force=force)
+        if result.get('error'):
+            raise HTTPException(status_code=400, detail=result['error'])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"全局共识分析失败: {str(e)}")
+
+
+@app.get("/api/global/ai/history")
+async def global_ai_history(summary_type: Optional[str] = None, limit: int = 20):
+    """获取全局 AI 分析历史"""
+    try:
+        ai = _get_global_ai_analyzer()
+        return ai.get_history(summary_type=summary_type, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取全局历史失败: {str(e)}")
+
+
+@app.get("/api/global/ai/history/{summary_id}")
+async def global_ai_history_detail(summary_id: int):
+    """获取某条全局历史分析的完整内容"""
+    try:
+        ai = _get_global_ai_analyzer()
+        result = ai.get_history_detail(summary_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="未找到该分析记录")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取全局详情失败: {str(e)}")
+
+
+@app.post("/api/global/scan")
+def scan_global(background_tasks: BackgroundTasks, force: bool = False):
+    """全局扫描所有群组的股票数据（后台任务）"""
+    global task_counter
+    task_counter += 1
+    task_id = f"global_scan_{task_counter}"
+    
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_scan",
+        "status": "running",
+        "message": "正在初始化全局扫描...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _global_scan_task(task_id: str):
+        try:
+            update_task(task_id, "running", "准备开始全局扫描...")
+            add_task_log(task_id, "🚀 开始全局股票提及扫描...")
+            
+            from db_path_manager import get_db_path_manager
+            from stock_analyzer import StockAnalyzer
+            
+            manager = get_db_path_manager()
+            groups = manager.list_all_groups()
+            
+            add_task_log(task_id, f"📋 共发现 {len(groups)} 个群组")
+            
+            total_mentions = 0
+            total_stocks = set()
+            processed_groups = 0
+            
+            for i, group in enumerate(groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 任务已被用户停止")
+                    break
+                
+                group_id = group['group_id']
+                add_task_log(task_id, "")
+                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在扫描群组 {group_id}...")
+                
+                try:
+                    # 使用 lambda 捕获 task_id，将 StockAnalyzer 的日志重定向到当前任务日志
+                    # 注意：StockAnalyzer 的日志回调只接受 msg 字符串
+                    analyzer = StockAnalyzer(group_id, log_callback=lambda msg: add_task_log(task_id, f"   {msg}"))
+                    result = analyzer.scan_group(force=force)
+                    
+                    mentions = result.get('mentions_extracted', 0)
+                    stocks = result.get('unique_stocks', 0)
+                    total_mentions += mentions
+                    # 注意：这里 total_stocks 只是粗略统计，因为不同群组可能统计到相同的股票 unique_stocks 是数字
+                    # 若要精确统计全局去重股票数，需要 analyzer 返回具体股票代码集合，目前 scan_group 只返回数量
+                    # 这里暂不精确累加 total_stocks
+                    
+                    add_task_log(task_id, f"   ✅ 群组 {group_id} 扫描完成: {mentions} 次提及")
+                    processed_groups += 1
+                    
+                except Exception as ge:
+                    add_task_log(task_id, f"   ❌ 群组 {group_id} 扫描失败: {ge}")
+            
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "全局扫描已停止")
+            else:
+                add_task_log(task_id, "")
+                add_task_log(task_id, "=" * 50)
+                add_task_log(task_id, f"🎉 全局扫描完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                add_task_log(task_id, f"📊 本次累计提取提及: {total_mentions} 次")
+                
+                # 触发全局分析器缓存失效
+                try:
+                    from global_analyzer import get_global_analyzer
+                    get_global_analyzer().invalidate_cache()
+                    add_task_log(task_id, "🔄 全局统计缓存已刷新")
+                except:
+                    pass
+                
+                update_task(task_id, "completed", f"全局扫描完成: {processed_groups} 个群组, {total_mentions} 次提及")
+
+        except Exception as e:
+            add_task_log(task_id, f"❌ 全局扫描异常: {e}")
+            update_task(task_id, "failed", f"全局扫描失败: {e}")
+
+    background_tasks.add_task(_global_scan_task, task_id)
+    return {"task_id": task_id, "message": "全局扫描任务已启动"}
 
 
 # ========== 调度器 API ==========

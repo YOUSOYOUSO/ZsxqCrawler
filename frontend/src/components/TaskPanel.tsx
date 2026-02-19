@@ -49,6 +49,8 @@ export default function TaskPanel() {
         return <Badge className="bg-green-100 text-green-800">✅ 已完成</Badge>;
       case 'failed':
         return <Badge className="bg-red-100 text-red-800">❌ 失败</Badge>;
+      case 'cancelled':
+        return <Badge className="bg-orange-100 text-orange-800">🛑 已取消</Badge>;
       default:
         return <Badge variant="secondary">{status}</Badge>;
     }
@@ -96,11 +98,12 @@ export default function TaskPanel() {
   const getRunningTasks = () => tasks.filter(task => task.status === 'running');
   const getCompletedTasks = () => tasks.filter(task => task.status === 'completed');
   const getFailedTasks = () => tasks.filter(task => task.status === 'failed');
+  const getCancelledTasks = () => tasks.filter(task => task.status === 'cancelled');
 
   return (
     <div className="space-y-4">
       {/* 任务统计概览 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <Card className="border border-gray-200 shadow-none">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">总任务数</CardTitle>
@@ -142,6 +145,17 @@ export default function TaskPanel() {
           <CardContent>
             <div className="text-2xl font-bold text-red-600">{getFailedTasks().length}</div>
             <p className="text-xs text-muted-foreground">需要处理</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border border-gray-200 shadow-none">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">已取消</CardTitle>
+            <Badge variant="secondary" className="bg-orange-100 text-orange-800">🛑</Badge>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-orange-600">{getCancelledTasks().length}</div>
+            <p className="text-xs text-muted-foreground">用户中止</p>
           </CardContent>
         </Card>
       </div>

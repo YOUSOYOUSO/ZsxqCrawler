@@ -507,132 +507,112 @@ class ZSXQInteractiveCrawler:
             return time_str
 
     def fetch_topics_safe(self, scope: str = "all", count: int = 20,
-                         end_time: Optional[str] = None, is_historical: bool = False) -> Optional[Dict[str, Any]]:
+                         end_time: Optional[str] = None, is_historical: bool = False, max_retries: int = 10) -> Optional[Dict[str, Any]]:
         """安全的话题获取方法"""
         
-        # 智能延迟
-        self.smart_delay(is_historical)
-        
-        url = f"{self.base_url}{self.api_endpoint}"
-        headers = self.get_stealth_headers()
-        
-        # 构建参数
-        params = {
-            "scope": scope,
-            "count": str(count)
-        }
-        
-        if end_time:
-            params["end_time"] = end_time
-        
-        # 不添加额外参数，保持与官网请求一致
-        # random_params = {
-        #     "_t": str(int(time.time() * 1000)),
-        #     "v": "1.0",
-        #     "_r": str(random.randint(1000, 9999))
-        # }
-        # 
-        # for key, value in random_params.items():
-        #     if random.random() > 0.3:  # 70%概率添加
-        #         params[key] = value
-        
-        # 构造完整URL用于显示
-        from urllib.parse import urlencode
-        full_url = f"{url}?{urlencode(params)}"
-        
-        self.log(f"🌐 安全请求 #{self.request_count}")
-        self.log(f"   🎯 参数: scope={scope}, count={count}")
-        if end_time:
-            self.log(f"   📅 时间: {end_time}")
-        self.log(f"   🔗 完整链接: {full_url}")
-        
-        # 调试模式输出详细信息
-        if self.debug_mode:
-            print(f"   🔍 调试模式:")
-            print(f"   📍 基础URL: {url}")
-            print(f"   📊 所有参数: {params}")
-            print(f"   🔧 请求头: {json.dumps(headers, ensure_ascii=False, indent=4)}")
-            print(f"   🍪 Cookie长度: {len(self.cookie)}字符")
-            print(f"   ⏰ 当前时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 在发起请求前检查停止标志
-        if self.is_stopped():
-            # 停止时不再打印日志，直接返回
-            return None
-
-        try:
-            response = self.session.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=10,  # 降低超时时间以便快速响应停止信号
-                allow_redirects=True
-            )
+        for retry in range(max_retries):
+            # 智能延迟
+            self.smart_delay(is_historical)
             
-            self.log(f"   📊 状态: {response.status_code}, 大小: {len(response.content)}B")
-
-            # 请求完成后立即检查停止标志
+            url = f"{self.base_url}{self.api_endpoint}"
+            headers = self.get_stealth_headers()
+            
+            # 构建参数
+            params = {
+                "scope": scope,
+                "count": str(count)
+            }
+            
+            if end_time:
+                params["end_time"] = end_time
+            
+            # 构造完整URL用于显示
+            from urllib.parse import urlencode
+            full_url = f"{url}?{urlencode(params)}"
+            
+            if retry == 0:
+                self.log(f"🌐 安全请求 #{self.request_count}")
+                self.log(f"   🎯 参数: scope={scope}, count={count}")
+                if end_time:
+                    self.log(f"   📅 时间: {end_time}")
+                self.log(f"   🔗 完整链接: {full_url}")
+            
+            # 在发起请求前检查停止标志
             if self.is_stopped():
                 return None
 
-            if response.status_code == 200:
-                try:
-                    # 在处理响应前检查停止标志
-                    if self.is_stopped():
-                        self.log("🛑 响应处理前检测到停止信号")
-                        return None
-
-                    data = response.json()
-                    if data.get('succeeded'):
-                        topics = data.get('resp_data', {}).get('topics', [])
-                        self.log(f"   ✅ 获取成功: {len(topics)}个话题")
-                        return data
-                    else:
-                        error_code = data.get('code')
-                        error_message = data.get('error', data.get('message', '未知错误'))
-
-                        # 检查是否是会员过期错误
-                        if error_code == 14210:
-                            print(f"   ❌ 会员已过期: {error_message}")
-                            print(f"   📋 完整响应: {json.dumps(data, ensure_ascii=False, indent=2)}")
-                            # 设置过期标志，让调用方知道这是过期错误
-                            return {"expired": True, "code": error_code, "message": error_message}
-                        else:
-                            print(f"   ❌ API失败: {error_message}")
-                            print(f"   📋 完整响应: {json.dumps(data, ensure_ascii=False, indent=2)}")
-                            return None
-                except json.JSONDecodeError as e:
-                    print(f"   ❌ JSON解析失败: {e}")
-                    print(f"   📄 响应内容: {response.text[:500]}...")
-                    print(f"   📋 响应头: {dict(response.headers)}")
-                    return None
-            else:
-                print(f"   ❌ HTTP错误: {response.status_code}")
-                print(f"   📄 响应内容: {response.text}")
-                print(f"   📋 响应头: {dict(response.headers)}")
-                if response.status_code == 429:
-                    print("   🚨 触发频率限制，建议增加延迟时间")
-                elif response.status_code == 403:
-                    print("   🚨 访问被拒绝，可能需要更新Cookie或反检测策略")
-                elif response.status_code == 401:
-                    print("   🚨 认证失败，请检查Cookie是否过期")
-                return None
+            try:
+                response = self.session.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=10,
+                    allow_redirects=True
+                )
                 
-        except requests.exceptions.Timeout as e:
-            print(f"   ❌ 请求超时: {e}")
-            print(f"   🔧 建议: 增加超时时间或检查网络连接")
-            return None
-        except requests.exceptions.ConnectionError as e:
-            print(f"   ❌ 连接错误: {e}")
-            print(f"   🔧 建议: 检查网络连接或DNS设置")
-            return None
-        except requests.exceptions.HTTPError as e:
-            print(f"   ❌ HTTP协议错误: {e}")
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"   ❌ 请求异常: {e}")
-            print(f"   🔧 异常类型: {type(e).__name__}")
-            return None
+                if retry > 0:
+                    self.log(f"   📊 状态: {response.status_code}, 大小: {len(response.content)}B (尝试 {retry+1}/{max_retries})")
+
+                # 请求完成后立即检查停止标志
+                if self.is_stopped():
+                    return None
+
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if data.get('succeeded'):
+                            if retry > 0:
+                                self.log(f"   ✅ 获取成功: {len(data.get('resp_data', {}).get('topics', []))}个话题 (重试成功)")
+                            else:
+                                self.log(f"   ✅ 获取成功: {len(data.get('resp_data', {}).get('topics', []))}个话题")
+                            return data
+                        else:
+                            error_code = data.get('code')
+                            error_message = data.get('error', data.get('message', '未知错误'))
+
+                            # 检查是否是会员过期错误
+                            if error_code == 14210:
+                                print(f"   ❌ 会员已过期: {error_message}")
+                                return {"expired": True, "code": error_code, "message": error_message}
+                            
+                            # 检查是否是反爬错误码 1059
+                            if error_code == 1059:
+                                if retry < max_retries - 1:
+                                    wait_time = 2 if retry < 3 else (5 if retry < 6 else 10)
+                                    self.log(f"   ⚠️ 遇到反爬机制 (错误码1059)，等待{wait_time}秒后重试 (第{retry+1}/{max_retries}次)")
+                                    time.sleep(wait_time)
+                                    continue
+                                else:
+                                    print(f"   ❌ API重复失败: {error_message} (已重试{max_retries}次)")
+                                    return None
+                            else:
+                                print(f"   ❌ API失败: {error_message}")
+                                return None
+                    except json.JSONDecodeError as e:
+                        print(f"   ❌ JSON解析失败: {e}")
+                        return None
+                else:
+                    if response.status_code == 429 or response.status_code == 403:
+                        if retry < max_retries - 1:
+                            wait_time = 5 * (retry + 1)
+                            self.log(f"   🚨 状态码 {response.status_code}，等待{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                    
+                    print(f"   ❌ HTTP错误: {response.status_code}")
+                    return None
+                    
+            except (requests.exceptions.RequestException, Exception) as e:
+                if retry < max_retries - 1:
+                    wait_time = 2 * (retry + 1)
+                    self.log(f"   ❌ 请求异常: {type(e).__name__}，等待{wait_time}秒后重试...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"   ❌ 请求最终异常: {e}")
+                    return None
+        
+        return None
     
     def store_batch_data(self, data: Dict[str, Any]) -> Dict[str, int]:
         """批量存储数据到数据库"""

@@ -3,7 +3,7 @@
  * API客户端 - 与后端FastAPI服务通信
  */
 
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || 'http://localhost:8208').replace(/\/$/, '');
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || 'http://localhost:8208').replace(/\/$/, '');
 
 // 类型定义
 export interface ApiResponse<T = any> {
@@ -15,7 +15,7 @@ export interface ApiResponse<T = any> {
 export interface Task {
   task_id: string;
   type: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   message: string;
   result?: any;
   created_at: string;
@@ -755,6 +755,11 @@ class ApiClient {
     return this.request(`/api/groups/${groupId}/stock/stats`);
   }
 
+  async getStockTopics(groupId: number | string, page: number = 1, perPage: number = 20) {
+    const q = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+    return this.request(`/api/groups/${groupId}/stock/topics?${q.toString()}`);
+  }
+
   async getStockMentions(groupId: number | string, params?: {
     stock_code?: string; page?: number; per_page?: number;
     sort_by?: string; order?: string;
@@ -892,6 +897,28 @@ class ApiClient {
 
   async getGlobalGroups(): Promise<any> {
     return this.request('/api/global/groups');
+  }
+
+  async scanGlobal(force: boolean = false): Promise<any> {
+    return this.request(`/api/global/scan?force=${force}`, { method: 'POST' });
+  }
+
+  async aiGlobalDailyBrief(lookbackDays: number = 7, force: boolean = false): Promise<any> {
+    return this.request(`/api/global/ai/daily-brief?lookback_days=${lookbackDays}&force=${force}`, { method: 'POST' });
+  }
+
+  async aiGlobalConsensus(topN: number = 15, force: boolean = false): Promise<any> {
+    return this.request(`/api/global/ai/consensus?top_n=${topN}&force=${force}`, { method: 'POST' });
+  }
+
+  async getGlobalAIHistory(summaryType?: string, limit: number = 20): Promise<any> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (summaryType) params.set('summary_type', summaryType);
+    return this.request(`/api/global/ai/history?${params.toString()}`);
+  }
+
+  async getGlobalAIHistoryDetail(summaryId: number): Promise<any> {
+    return this.request(`/api/global/ai/history/${summaryId}`);
   }
 
   // ========== 调度器 API ==========

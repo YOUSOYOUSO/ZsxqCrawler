@@ -42,9 +42,12 @@ export default function GroupDetailPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [crawlLoading, setCrawlLoading] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState<string | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [recentTasks, setRecentTasks] = useState<any[]>([]);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
-  const [activeMode, setActiveMode] = useState<'crawl' | 'download'>('crawl');
+  const [currentTaskStatus, setCurrentTaskStatus] = useState<string | null>(null);
+  const [currentTaskMessage, setCurrentTaskMessage] = useState<string>('');
+  const [activeMode, setActiveMode] = useState<'crawl' | 'download' | 'analyze'>('crawl');
   const [activeTab, setActiveTab] = useState('topics');
   const [retryCount, setRetryCount] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -175,6 +178,40 @@ export default function GroupDetailPage() {
   useEffect(() => {
     loadTopics();
   }, [currentPage, searchTerm, selectedTag]);
+
+  useEffect(() => {
+    if (!currentTaskId) {
+      setCurrentTaskStatus(null);
+      setCurrentTaskMessage('');
+      return;
+    }
+
+    let disposed = false;
+    const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
+
+    const pollTask = async () => {
+      try {
+        const task = await apiClient.getTask(currentTaskId);
+        if (disposed) return;
+        setCurrentTaskStatus(task.status || null);
+        setCurrentTaskMessage(task.message || '');
+        if (terminalStatuses.has(task.status)) {
+          loadRecentTasks();
+        }
+      } catch (e) {
+        if (!disposed) {
+          console.warn('轮询任务状态失败:', e);
+        }
+      }
+    };
+
+    pollTask();
+    const timer = setInterval(pollTask, 2000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [currentTaskId]);
 
   // 批量预取当前页话题详情，带去重
   useEffect(() => {
@@ -684,6 +721,22 @@ export default function GroupDetailPage() {
       toast.error(`文件下载失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setFileLoading(null);
+    }
+  };
+
+  const handleAnalyzeStocks = async (force = false) => {
+    try {
+      setAnalysisLoading(true);
+      const response = await apiClient.scanStocks(groupId, force);
+      toast.success(`数据分析任务已创建: ${(response as any).task_id}`);
+      setCurrentTaskId((response as any).task_id);
+      setCurrentTaskStatus('pending');
+      setCurrentTaskMessage('分析任务已创建，等待执行...');
+      setActiveTab('logs');
+    } catch (error) {
+      toast.error(`数据分析失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setAnalysisLoading(false);
     }
   };
 
@@ -2200,7 +2253,11 @@ export default function GroupDetailPage() {
 
             {/* 股票分析内容区域 */}
             <TabsContent value="stocks" className="flex-1 flex flex-col min-h-0">
-              <StockDashboard groupId={groupId} />
+              <StockDashboard
+                groupId={groupId}
+                onTaskCreated={(taskId) => setCurrentTaskId(taskId)}
+                hideScanActions={true}
+              />
             </TabsContent>
 
             {/* 任务日志区域 */}
@@ -2227,14 +2284,14 @@ export default function GroupDetailPage() {
 
 
 
-        {/* 右侧：爬取和下载菜单 - 固定宽度，使用sticky定位 */}
+        {/* 右侧：采集/下载/分析菜单 - 固定宽度，使用sticky定位 */}
         <div className="w-80 flex-shrink-0 sticky top-0 h-fit max-h-screen">
           <Card className="border border-gray-200 shadow-none h-full">
             <ScrollArea className="h-full">
               <CardContent className="p-4">
                 {/* 模式切换 */}
                 <Tabs value={activeMode} onValueChange={setActiveMode} className="space-y-4">
-                  <TabsList className="grid w-full grid-cols-2">
+                  <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="crawl" className="text-xs">
                       <MessageSquare className="h-3 w-3 mr-1" />
                       采集
@@ -2242,6 +2299,10 @@ export default function GroupDetailPage() {
                     <TabsTrigger value="download" className="text-xs">
                       <Download className="h-3 w-3 mr-1" />
                       下载
+                    </TabsTrigger>
+                    <TabsTrigger value="analyze" className="text-xs">
+                      <TrendingUp className="h-3 w-3 mr-1" />
+                      分析
                     </TabsTrigger>
                   </TabsList>
 
@@ -2777,12 +2838,71 @@ export default function GroupDetailPage() {
 
                     </div>
                   </TabsContent>
+
+                  <TabsContent value="analyze" className="space-y-3 mt-4">
+                    <div className="border rounded-lg p-3 border-emerald-200 bg-emerald-50/40">
+                      <div className="flex items-center gap-2 mb-2">
+                        <BarChart3 className="h-3 w-3 text-emerald-600" />
+                        <span className="text-xs font-medium text-emerald-700">开始数据分析</span>
+                      </div>
+                      <div className="text-xs text-gray-600 space-y-1 mb-3">
+                        <p>提取股票提及并计算后续表现。</p>
+                        <p>任务会进入“任务日志”页签。</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
+                          onClick={() => handleAnalyzeStocks(false)}
+                          disabled={analysisLoading}
+                        >
+                          {analysisLoading ? '创建中...' : '开始'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => handleAnalyzeStocks(true)}
+                          disabled={analysisLoading}
+                        >
+                          强制重算
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="border rounded-lg p-3 border-blue-200">
+                      <div className="text-xs text-blue-700 mb-2">分析完成后可在“股票分析”页签查看详细结果。</div>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setActiveTab('stocks')}>
+                        打开股票分析
+                      </Button>
+                    </div>
+
+                    {currentTaskId && (
+                      <div className="border rounded-lg p-3 border-gray-200 bg-gray-50">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium text-gray-700">当前任务</span>
+                          <span className="text-xs text-gray-500">{currentTaskStatus || 'pending'}</span>
+                        </div>
+                        <div className="text-[11px] text-gray-600 mb-2 break-all">{currentTaskMessage || `task: ${currentTaskId}`}</div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setActiveTab('logs');
+                          }}
+                        >
+                          查看任务日志
+                        </Button>
+                      </div>
+                    )}
+                  </TabsContent>
                 </Tabs>
 
 
 
                 {/* 任务状态显示 */}
-                {(crawlLoading || fileLoading) && (
+                {(crawlLoading || fileLoading || analysisLoading) && (
                   <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-center gap-2 mb-1">
                       <div className="animate-spin rounded-full h-3 w-3 border-2 border-blue-600 border-t-transparent"></div>
@@ -2796,6 +2916,7 @@ export default function GroupDetailPage() {
                       {fileLoading === 'download-time' && '正在按时间顺序下载文件...'}
                       {fileLoading === 'download-count' && '正在按下载次数下载文件...'}
                       {fileLoading === 'clear' && '正在删除文件数据库...'}
+                      {analysisLoading && '正在创建数据分析任务...'}
                     </p>
                   </div>
                 )}

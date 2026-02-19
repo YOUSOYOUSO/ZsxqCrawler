@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { X, Minimize2, Maximize2, Terminal, MessageSquare, Square, AlertTriangle } from 'lucide-react';
+import { API_BASE_URL } from '@/lib/api';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,12 +48,20 @@ export default function TaskLogViewer({
   const [expiredMessage, setExpiredMessage] = useState('');
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const onTaskStopRef = useRef<(() => void) | undefined>(onTaskStop);
+  const terminalRef = useRef(false);
+
+  useEffect(() => {
+    onTaskStopRef.current = onTaskStop;
+  }, [onTaskStop]);
 
   useEffect(() => {
     if (!taskId) return;
+    terminalRef.current = false;
+    setLogs([]);
+    setStatus('pending');
 
     // 建立SSE连接
-    const API_BASE_URL = 'http://localhost:8208';
     const eventSource = new EventSource(`${API_BASE_URL}/api/tasks/${taskId}/stream`);
     eventSourceRef.current = eventSource;
 
@@ -77,15 +86,16 @@ export default function TaskLogViewer({
           setStatus(data.status);
           // 不再将状态信息添加到日志中，只更新状态
 
-          // 如果任务完成或失败，关闭SSE连接
-          if (data.status === 'completed' || data.status === 'failed') {
+          // 如果任务完成、失败或取消，关闭SSE连接
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
             console.log(`任务${data.status}，关闭SSE连接`);
+            terminalRef.current = true;
             eventSource.close();
             setIsConnected(false);
 
             // 调用任务停止回调
-            if (onTaskStop) {
-              onTaskStop();
+            if (onTaskStopRef.current) {
+              onTaskStopRef.current();
             }
           }
         }
@@ -98,6 +108,11 @@ export default function TaskLogViewer({
     eventSource.onerror = (error) => {
       console.error('SSE连接错误:', error);
       setIsConnected(false);
+      // 任务已结束时阻止 EventSource 自动重连造成日志反复跳动
+      if (terminalRef.current && eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
     };
 
     return () => {
@@ -113,6 +128,7 @@ export default function TaskLogViewer({
 
     if ((isTerminal || isCancelledNormalTask) && eventSourceRef.current) {
       console.log(`状态变为${status}，确保SSE连接已关闭`);
+      terminalRef.current = true;
       eventSourceRef.current.close();
       eventSourceRef.current = null;
       setIsConnected(false);
@@ -217,23 +233,7 @@ export default function TaskLogViewer({
     }
   };
 
-  const _getLogIcon = (type: string): string => {
-    switch (type) {
-      case 'start': return '🚀';
-      case 'success': return '✅';
-      case 'error': return '❌';
-      case 'stats': return '📊';
-      case 'storage': return '💾';
-      case 'time': return '⏰';
-      case 'debug': return '🔍';
-      case 'warning': return '⚠️';
-      case 'network': return '📡';
-      case 'summary': return '🎉';
-      case 'progress': return '📄';
-      case 'status': return '🔄';
-      default: return 'ℹ️';
-    }
-  };
+
 
   const getLogStyle = (type: string): string => {
     switch (type) {

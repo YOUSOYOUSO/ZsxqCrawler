@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api';
 import { toast } from 'sonner';
 
@@ -27,10 +27,10 @@ export default function ConfigPanel({ onConfigSaved }: ConfigPanelProps) {
 
     try {
       setLoading(true);
-      const response = await apiClient.updateConfig({
+      await apiClient.updateConfig({
         cookie: cookie.trim(),
       });
-      
+
       toast.success('配置保存成功！');
       onConfigSaved();
     } catch (error) {
@@ -127,7 +127,7 @@ export default function ConfigPanel({ onConfigSaved }: ConfigPanelProps) {
                 按照以下步骤获取所需的认证信息
               </AlertDialogDescription>
             </AlertDialogHeader>
-            
+
             <div className="space-y-6">
               {/* Cookie获取说明 */}
               <div className="space-y-3">

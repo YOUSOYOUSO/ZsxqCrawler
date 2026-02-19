@@ -90,6 +90,10 @@ class DatabasePathManager:
     def get_main_db_path(self, group_id: str) -> str:
         """获取主数据库路径（兼容旧版本）"""
         return self.get_topics_db_path(group_id)
+
+    def get_global_ai_db_path(self) -> str:
+        """获取全局AI分析数据库路径"""
+        return os.path.join(self.base_dir, "zsxq_global_ai.db")
     
     def list_group_databases(self, group_id: str) -> Dict[str, str]:
         """列出指定群组的所有数据库文件"""

@@ -49,13 +49,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ images, className = '', siz
     );
   };
 
-  // 获取预览图URL，优先使用original，然后large
-  const getPreviewUrl = (image: ImageData) => {
-    return apiClient.getProxyImageUrl(
-      image.original?.url || image.large?.url || image.thumbnail?.url || '',
-      groupId
-    );
-  };
+
 
   // 根据size属性获取对应的样式类（固定缩略图盒子尺寸，避免加载时宽度抖动）
   const getSizeClasses = () => {
@@ -96,7 +90,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ images, className = '', siz
                 }
               }}
             />
-            
+
             {/* 多图时显示图片数量标识 */}
             {images.length > 1 && (
               <div className="absolute top-1 right-1 bg-black bg-opacity-60 text-white text-xs px-1.5 py-0.5 rounded">

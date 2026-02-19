@@ -46,8 +46,8 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
 
     try {
       setLoading('historical');
-      const response = await apiClient.crawlHistorical(selectedGroup.group_id, historicalPages, historicalPerPage);
-      toast.success(`任务已创建: ${response.task_id}`);
+      const res = await apiClient.crawlHistorical(selectedGroup.group_id, historicalPages, historicalPerPage);
+      toast.success(`任务已创建: ${(res as { task_id: string }).task_id}`);
       onStatsUpdate();
     } catch (error) {
       toast.error(`创建任务失败: ${error instanceof Error ? error.message : '未知错误'}`);
@@ -83,8 +83,8 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
 
       console.log(`🚀 CrawlPanel实例 ${instanceId} 最终发送的爬取设置:`, crawlSettings);
 
-      const response = await apiClient.crawlAll(selectedGroup.group_id, crawlSettings);
-      toast.success(`任务已创建: ${response.task_id}`);
+      const res = await apiClient.crawlAll(selectedGroup.group_id, crawlSettings);
+      toast.success(`任务已创建: ${(res as { task_id: string }).task_id}`);
       onStatsUpdate();
     } catch (error) {
       toast.error(`创建任务失败: ${error instanceof Error ? error.message : '未知错误'}`);
@@ -92,7 +92,7 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
       setLoading(null);
     }
   };
-  
+
   const handleCrawlLatestConfirm = async (params: {
     mode: 'latest' | 'range';
     startTime?: string;
@@ -117,12 +117,9 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
         pagesPerBatch: Math.max(pagesPerBatch, 5),
       };
 
-      let response: any;
-
-      if (params.mode === 'latest') {
-        response = await apiClient.crawlLatestUntilComplete(selectedGroup.group_id, crawlSettings);
-      } else {
-        response = await apiClient.crawlByTimeRange(selectedGroup.group_id, {
+      const res = params.mode === 'latest'
+        ? await apiClient.crawlLatestUntilComplete(selectedGroup.group_id, crawlSettings)
+        : await apiClient.crawlByTimeRange(selectedGroup.group_id, {
           startTime: params.startTime,
           endTime: params.endTime,
           lastDays: params.lastDays,
@@ -133,9 +130,8 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
           longSleepIntervalMax,
           pagesPerBatch: Math.max(pagesPerBatch, 5),
         });
-      }
 
-      toast.success(`任务已创建: ${response.task_id}`);
+      toast.success(`任务已创建: ${(res as { task_id: string }).task_id}`);
       onStatsUpdate();
       setCrawlLatestOpen(false);
     } catch (error) {
@@ -144,7 +140,7 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
       setLoading(null);
     }
   };
-  
+
   // 处理爬取设置变更
   const handleCrawlSettingsChange = (settings: {
     crawlInterval: number;
@@ -180,7 +176,7 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
 
     try {
       setLoading('clear');
-      const response = await apiClient.clearTopicDatabase(selectedGroup.group_id);
+      await apiClient.clearTopicDatabase(selectedGroup.group_id);
       toast.success('话题数据库已清除');
       onStatsUpdate();
     } catch (error) {
@@ -210,177 +206,177 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {/* 获取最新话题 */}
-      <Card className="border border-gray-200 shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Badge variant="secondary">🆕</Badge>
-            获取最新话题
-          </CardTitle>
-          <CardDescription>
-            默认从最新开始，也可按时间区间采集
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>✅ 默认：直接从最新话题开始增量抓取</p>
-            <p>🕒 可选：按时间区间采集（首次也可用）</p>
-          </div>
-          <Button
-            onClick={() => setCrawlLatestOpen(true)}
-            disabled={loading === 'latest'}
-            className="w-full"
-          >
-            {loading === 'latest' ? '创建任务中...' : '获取最新'}
-          </Button>
-        </CardContent>
-      </Card>
-      {/* 增量爬取历史 */}
-      <Card className="border border-gray-200 shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Badge variant="secondary">📚</Badge>
-            增量爬取历史
-          </CardTitle>
-          <CardDescription>
-            基于数据库最老时间戳，精确补充历史数据
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-2">
-              <Label htmlFor="historical-pages">爬取页数</Label>
-              <Input
-                id="historical-pages"
-                type="number"
-                value={historicalPages}
-                onChange={(e) => setHistoricalPages(Number(e.target.value))}
-                min={1}
-                max={1000}
-              />
+        {/* 获取最新话题 */}
+        <Card className="border border-gray-200 shadow-none">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Badge variant="secondary">🆕</Badge>
+              获取最新话题
+            </CardTitle>
+            <CardDescription>
+              默认从最新开始，也可按时间区间采集
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>✅ 默认：直接从最新话题开始增量抓取</p>
+              <p>🕒 可选：按时间区间采集（首次也可用）</p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="historical-per-page">每页数量</Label>
-              <Input
-                id="historical-per-page"
-                type="number"
-                value={historicalPerPage}
-                onChange={(e) => setHistoricalPerPage(Number(e.target.value))}
-                min={1}
-                max={100}
-              />
+            <Button
+              onClick={() => setCrawlLatestOpen(true)}
+              disabled={loading === 'latest'}
+              className="w-full"
+            >
+              {loading === 'latest' ? '创建任务中...' : '获取最新'}
+            </Button>
+          </CardContent>
+        </Card>
+        {/* 增量爬取历史 */}
+        <Card className="border border-gray-200 shadow-none">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Badge variant="secondary">📚</Badge>
+              增量爬取历史
+            </CardTitle>
+            <CardDescription>
+              基于数据库最老时间戳，精确补充历史数据
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-2">
+                <Label htmlFor="historical-pages">爬取页数</Label>
+                <Input
+                  id="historical-pages"
+                  type="number"
+                  value={historicalPages}
+                  onChange={(e) => setHistoricalPages(Number(e.target.value))}
+                  min={1}
+                  max={1000}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="historical-per-page">每页数量</Label>
+                <Input
+                  id="historical-per-page"
+                  type="number"
+                  value={historicalPerPage}
+                  onChange={(e) => setHistoricalPerPage(Number(e.target.value))}
+                  min={1}
+                  max={100}
+                />
+              </div>
             </div>
-          </div>
-          <Button
-            onClick={handleCrawlHistorical}
-            disabled={loading === 'historical'}
-            className="w-full"
-          >
-            {loading === 'historical' ? '创建任务中...' : '开始爬取'}
-          </Button>
-          <div className="text-xs text-muted-foreground">
-            <p>✅ 适合：精确补充历史，有目标的回填</p>
-            <p>📊 总计爬取: {historicalPages * historicalPerPage} 条记录</p>
-          </div>
-        </CardContent>
-      </Card>
+            <Button
+              onClick={handleCrawlHistorical}
+              disabled={loading === 'historical'}
+              className="w-full"
+            >
+              {loading === 'historical' ? '创建任务中...' : '开始爬取'}
+            </Button>
+            <div className="text-xs text-muted-foreground">
+              <p>✅ 适合：精确补充历史，有目标的回填</p>
+              <p>📊 总计爬取: {historicalPages * historicalPerPage} 条记录</p>
+            </div>
+          </CardContent>
+        </Card>
 
-      {/* 获取所有历史数据 */}
-      <Card className="border border-gray-200 shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Badge variant="secondary">🔄</Badge>
-            获取所有历史数据
-          </CardTitle>
-          <CardDescription>
-            无限爬取，从最老数据无限挖掘
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>⚠️ 这是一个长时间运行的任务</p>
-            <p>🔄 将持续爬取直到没有更多历史数据</p>
-            <p>📈 适合：全量归档，完整数据收集</p>
-          </div>
-          
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                variant="destructive"
-                disabled={loading === 'all'}
-                className="w-full"
-              >
-                {loading === 'all' ? '创建任务中...' : '开始全量爬取'}
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>确认全量爬取</AlertDialogTitle>
-                <AlertDialogDescription>
-                  这将开始一个长时间运行的任务，持续爬取所有历史数据直到完成。
-                  任务可能需要数小时甚至更长时间，确定要继续吗？
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={handleCrawlAll}>
-                  确认开始
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </CardContent>
-      </Card>
+        {/* 获取所有历史数据 */}
+        <Card className="border border-gray-200 shadow-none">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Badge variant="secondary">🔄</Badge>
+              获取所有历史数据
+            </CardTitle>
+            <CardDescription>
+              无限爬取，从最老数据无限挖掘
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>⚠️ 这是一个长时间运行的任务</p>
+              <p>🔄 将持续爬取直到没有更多历史数据</p>
+              <p>📈 适合：全量归档，完整数据收集</p>
+            </div>
 
-      {/* 清除话题数据库 */}
-      <Card className="border border-gray-200 shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Badge variant="destructive">🗑️</Badge>
-            清除话题数据库
-          </CardTitle>
-          <CardDescription>
-            清除所有话题、评论、用户等数据
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>⚠️ 将删除所有话题数据</p>
-            <p>🔄 清除评论、用户、图片等</p>
-            <p>💾 不会删除配置和设置</p>
-          </div>
-
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                variant="destructive"
-                disabled={loading === 'clear'}
-                className="w-full"
-              >
-                {loading === 'clear' ? '清除中...' : '清除数据库'}
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle className="text-red-600">确认清除数据库</AlertDialogTitle>
-                <AlertDialogDescription className="text-red-700">
-                  这将永久删除所有话题数据，包括话题、评论、用户信息等。
-                  此操作不可恢复，确定要继续吗？
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={handleClearTopicDatabase}
-                  className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  disabled={loading === 'all'}
+                  className="w-full"
                 >
-                  确认清除
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </CardContent>
-      </Card>
+                  {loading === 'all' ? '创建任务中...' : '开始全量爬取'}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>确认全量爬取</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    这将开始一个长时间运行的任务，持续爬取所有历史数据直到完成。
+                    任务可能需要数小时甚至更长时间，确定要继续吗？
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleCrawlAll}>
+                    确认开始
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </CardContent>
+        </Card>
+
+        {/* 清除话题数据库 */}
+        <Card className="border border-gray-200 shadow-none">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Badge variant="destructive">🗑️</Badge>
+              清除话题数据库
+            </CardTitle>
+            <CardDescription>
+              清除所有话题、评论、用户等数据
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>⚠️ 将删除所有话题数据</p>
+              <p>🔄 清除评论、用户、图片等</p>
+              <p>💾 不会删除配置和设置</p>
+            </div>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  disabled={loading === 'clear'}
+                  className="w-full"
+                >
+                  {loading === 'clear' ? '清除中...' : '清除数据库'}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="text-red-600">确认清除数据库</AlertDialogTitle>
+                  <AlertDialogDescription className="text-red-700">
+                    这将永久删除所有话题数据，包括话题、评论、用户信息等。
+                    此操作不可恢复，确定要继续吗？
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleClearTopicDatabase}
+                    className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+                  >
+                    确认清除
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </CardContent>
+        </Card>
       </div>
 
       <CrawlLatestDialog

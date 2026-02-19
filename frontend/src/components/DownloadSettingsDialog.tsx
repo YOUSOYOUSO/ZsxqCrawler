@@ -38,23 +38,17 @@ export default function DownloadSettingsDialog({
   filesPerBatch,
   onSettingsChange,
 }: DownloadSettingsDialogProps) {
-  const [localDownloadInterval, setLocalDownloadInterval] = useState(downloadInterval);
-  const [localLongSleepInterval, setLocalLongSleepInterval] = useState(longSleepInterval);
-  const [localFilesPerBatch, setLocalFilesPerBatch] = useState(filesPerBatch);
-
-  // 新增范围设置状态
-  const [downloadIntervalMin, setDownloadIntervalMin] = useState(15);
-  const [downloadIntervalMax, setDownloadIntervalMax] = useState(30);
-  const [longSleepIntervalMin, setLongSleepIntervalMin] = useState(30);
-  const [longSleepIntervalMax, setLongSleepIntervalMax] = useState(60);
+  const [downloadIntervalMin, setDownloadIntervalMin] = useState<number | ''>(15);
+  const [downloadIntervalMax, setDownloadIntervalMax] = useState<number | ''>(30);
+  const [longSleepIntervalMin, setLongSleepIntervalMin] = useState<number | ''>(30);
+  const [longSleepIntervalMax, setLongSleepIntervalMax] = useState<number | ''>(60);
+  const [localFilesPerBatch, setLocalFilesPerBatch] = useState<number | ''>(filesPerBatch);
   const [useRandomInterval, setUseRandomInterval] = useState(true);
   const [selectedPreset, setSelectedPreset] = useState<'fast' | 'standard' | 'safe' | null>('fast');
 
   // 当对话框打开时，同步当前设置值
   useEffect(() => {
     if (open) {
-      setLocalDownloadInterval(downloadInterval);
-      setLocalLongSleepInterval(longSleepInterval);
       setLocalFilesPerBatch(filesPerBatch);
 
       // 如果是第一次打开，默认设置为快速配置
@@ -66,11 +60,11 @@ export default function DownloadSettingsDialog({
 
   const handleSave = () => {
     // 确保所有值都有默认值
-    const finalDownloadIntervalMin = downloadIntervalMin || 15;
-    const finalDownloadIntervalMax = downloadIntervalMax || 30;
-    const finalLongSleepIntervalMin = longSleepIntervalMin || 30;
-    const finalLongSleepIntervalMax = longSleepIntervalMax || 60;
-    const finalFilesPerBatch = localFilesPerBatch || 10;
+    const finalDownloadIntervalMin = Number(downloadIntervalMin) || 15;
+    const finalDownloadIntervalMax = Number(downloadIntervalMax) || 30;
+    const finalLongSleepIntervalMin = Number(longSleepIntervalMin) || 30;
+    const finalLongSleepIntervalMax = Number(longSleepIntervalMax) || 60;
+    const finalFilesPerBatch = Number(localFilesPerBatch) || 10;
 
     onSettingsChange({
       downloadInterval: useRandomInterval
@@ -90,8 +84,6 @@ export default function DownloadSettingsDialog({
 
   const handleCancel = () => {
     // 重置为原始值
-    setLocalDownloadInterval(downloadInterval);
-    setLocalLongSleepInterval(longSleepInterval);
     setLocalFilesPerBatch(filesPerBatch);
     onOpenChange(false);
   };
@@ -217,7 +209,7 @@ export default function DownloadSettingsDialog({
             <p className="text-xs text-gray-500">
               {useRandomInterval
                 ? '每次下载文件后的随机等待时间范围'
-                : `每次下载文件后的固定等待时间 (取中间值: ${Math.round((downloadIntervalMin + downloadIntervalMax) / 2)}秒)`
+                : `每次下载文件后的固定等待时间 (取中间值: ${Math.round((Number(downloadIntervalMin) + Number(downloadIntervalMax)) / 2)}秒)`
               }
             </p>
           </div>
@@ -279,7 +271,7 @@ export default function DownloadSettingsDialog({
             <p className="text-xs text-gray-500">
               {useRandomInterval
                 ? '达到批次大小后的随机长时间休眠范围'
-                : `达到批次大小后的固定长时间休眠 (取中间值: ${Math.round((longSleepIntervalMin + longSleepIntervalMax) / 2)}秒)`
+                : `达到批次大小后的固定长时间休眠 (取中间值: ${Math.round((Number(longSleepIntervalMin) + Number(longSleepIntervalMax)) / 2)}秒)`
               }
             </p>
           </div>
@@ -324,11 +316,10 @@ export default function DownloadSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('fast')}
-                className={`flex-1 ${
-                  selectedPreset === 'fast'
-                    ? 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'
-                    : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                className={`flex-1 ${selectedPreset === 'fast'
+                  ? 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+                  }`}
               >
                 快速
               </Button>
@@ -337,11 +328,10 @@ export default function DownloadSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('standard')}
-                className={`flex-1 ${
-                  selectedPreset === 'standard'
-                    ? 'bg-blue-100 text-blue-800 border-blue-300 hover:bg-blue-200'
-                    : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                className={`flex-1 ${selectedPreset === 'standard'
+                  ? 'bg-blue-100 text-blue-800 border-blue-300 hover:bg-blue-200'
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+                  }`}
               >
                 标准
               </Button>
@@ -350,11 +340,10 @@ export default function DownloadSettingsDialog({
                 variant="outline"
                 size="sm"
                 onClick={() => setPreset('safe')}
-                className={`flex-1 ${
-                  selectedPreset === 'safe'
-                    ? 'bg-orange-100 text-orange-800 border-orange-300 hover:bg-orange-200'
-                    : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                }`}
+                className={`flex-1 ${selectedPreset === 'safe'
+                  ? 'bg-orange-100 text-orange-800 border-orange-300 hover:bg-orange-200'
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+                  }`}
               >
                 安全
               </Button>
