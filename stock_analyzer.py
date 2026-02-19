@@ -232,6 +232,7 @@ class StockAnalyzer:
                 total = len(name_to_code)
                 self.log(f"字典处理进度 {total}/{total}")
 
+            self._load_and_apply_user_aliases(name_to_code, stock_dict)
             self.log("正在构建股票匹配索引")
             automaton = ahocorasick.Automaton()
             total = len(name_to_code)
@@ -253,6 +254,53 @@ class StockAnalyzer:
             self._stock_dict = stock_dict
             self._name_to_code = name_to_code
             self.log("股票字典就绪")
+
+    def _load_and_apply_user_aliases(self, name_to_code: Dict[str, str], stock_dict: Dict[str, str]):
+        """
+        加载用户自定义别名并应用到字典中
+        stock_aliases.json 格式: {"别名": "标准股票名称"}
+        """
+        alias_file = Path("stock_aliases.json")
+        if not alias_file.exists():
+            return
+
+        try:
+            with open(alias_file, "r", encoding="utf-8") as f:
+                aliases = json.load(f)
+            
+            count = 0
+            # 建立反向查找表: Standard Name -> Code (stock_dict is Code -> Name)
+            std_name_to_code = {v: k for k, v in stock_dict.items()}
+
+            for alias, std_name in aliases.items():
+                alias = alias.strip()
+                std_name = std_name.strip()
+                if not alias or not std_name:
+                    continue
+                
+                # 查找标准名称对应的代码
+                code = std_name_to_code.get(std_name)
+                
+                # 如果找不到，尝试 std_name 是否本身就是代码
+                if not code and std_name in stock_dict:
+                     code = std_name
+                
+                if code:
+                    # 将别名映射到该代码
+                    name_to_code[alias] = code
+                    count += 1
+                else:
+                    msg = f"别名配置错误: 找不到股票 '{std_name}' (别名: {alias})"
+                    self.log(msg)
+                    log_warning(msg)
+
+            if count > 0:
+                self.log(f"已加载 {count} 个用户自定义股票别名")
+
+        except Exception as e:
+            msg = f"加载股票别名失败: {e}"
+            self.log(msg)
+            log_warning(msg)
 
     def _load_stock_dictionary_from_cache(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         """尝试从本地缓存读取股票字典"""
