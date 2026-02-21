@@ -87,7 +87,13 @@ export default function TaskLogViewer({
           // 不再将状态信息添加到日志中，只更新状态
 
           // 如果任务完成、失败或取消，关闭SSE连接
-          if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+          if (
+            data.status === 'completed' ||
+            data.status === 'failed' ||
+            data.status === 'cancelled' ||
+            data.status === 'stopped' ||
+            data.status === 'idle'
+          ) {
             console.log(`任务${data.status}，关闭SSE连接`);
             terminalRef.current = true;
             eventSource.close();
@@ -123,7 +129,11 @@ export default function TaskLogViewer({
 
   // 监听状态变化，确保任务完成时关闭连接
   useEffect(() => {
-    const isTerminal = status === 'completed' || status === 'failed';
+    const isTerminal =
+      status === 'completed' ||
+      status === 'failed' ||
+      status === 'stopped' ||
+      status === 'idle';
     const isCancelledNormalTask = status === 'cancelled' && taskId !== 'scheduler';
 
     if ((isTerminal || isCancelledNormalTask) && eventSourceRef.current) {
@@ -155,6 +165,8 @@ export default function TaskLogViewer({
         return 'bg-gradient-to-r from-red-100 to-rose-100 text-red-800 border border-red-200';
       case 'pending':
         return 'bg-gradient-to-r from-amber-100 to-yellow-100 text-amber-800 border border-amber-200';
+      case 'stopping':
+        return 'bg-gradient-to-r from-orange-100 to-amber-100 text-orange-800 border border-orange-200';
       case 'idle':
         return 'bg-gradient-to-r from-slate-100 to-gray-100 text-slate-600 border border-slate-200';
       case 'stopped':
@@ -175,6 +187,8 @@ export default function TaskLogViewer({
         return '执行失败';
       case 'pending':
         return '等待中';
+      case 'stopping':
+        return '停止中';
       case 'cancelled':
         return '已取消';
       case 'stopped':

@@ -47,6 +47,9 @@ cache
 /.history/
 /downloads/
 /output/
+/.local/
+test*.py
+test*.js
 
 # local config
 config.toml

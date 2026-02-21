@@ -22,6 +22,8 @@ import DownloadSettingsDialog from '@/components/DownloadSettingsDialog';
 import CrawlSettingsDialog from '@/components/CrawlSettingsDialog';
 import ImageGallery from '@/components/ImageGallery';
 import StockDashboard from '@/components/StockDashboard';
+import MiddlePanelShell, { middlePanelTokens } from '@/components/MiddlePanelShell';
+import UnifiedTopicCard from '@/components/UnifiedTopicCard';
 
 // 话题详情缓存，避免重复请求
 const topicDetailCache: Map<string, any> = new Map();
@@ -91,6 +93,7 @@ export default function GroupDetailPage() {
   const [topicDetails, setTopicDetails] = useState<Map<string, any>>(new Map());
   const inFlightRef = useRef<Map<string, Promise<any>>>(new Map());
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const logsSectionRef = useRef<HTMLDivElement>(null);
 
 
 
@@ -212,6 +215,12 @@ export default function GroupDetailPage() {
       clearInterval(timer);
     };
   }, [currentTaskId]);
+
+  useEffect(() => {
+    if (activeTab === 'logs' && logsSectionRef.current) {
+      logsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [activeTab]);
 
   // 批量预取当前页话题详情，带去重
   useEffect(() => {
@@ -727,12 +736,24 @@ export default function GroupDetailPage() {
   const handleAnalyzeStocks = async (force = false) => {
     try {
       setAnalysisLoading(true);
+      // 先切到日志页，立即展示“等待任务”占位，避免用户需要二次点击
+      setActiveTab('logs');
+      setCurrentTaskStatus('pending');
+      setCurrentTaskMessage('正在创建数据分析任务...');
+      if (logsSectionRef.current) {
+        logsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
       const response = await apiClient.scanStocks(groupId, force);
       toast.success(`数据分析任务已创建: ${(response as any).task_id}`);
       setCurrentTaskId((response as any).task_id);
       setCurrentTaskStatus('pending');
       setCurrentTaskMessage('分析任务已创建，等待执行...');
+      // 再次确保日志页可见（处理移动端/长页场景）
       setActiveTab('logs');
+      if (logsSectionRef.current) {
+        logsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     } catch (error) {
       toast.error(`数据分析失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
@@ -1185,9 +1206,18 @@ export default function GroupDetailPage() {
     // 详情由父组件预取并通过 props 提供
 
     return (
-      <div ref={cardRef} className="border border-gray-200 shadow-none w-full max-w-full bg-white rounded-lg" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-        <div className="p-4 w-full max-w-full" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-          <div className="space-y-3 w-full">
+      <UnifiedTopicCard
+        scope="group"
+        topicId={topic.topic_id}
+        hideMetaHeader={true}
+        className="w-full max-w-full shadow-none"
+        contentClassName="w-full max-w-full"
+      >
+        <div
+          ref={cardRef}
+          className="space-y-3 w-full"
+          style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}
+        >
             {/* 作者信息和徽章 */}
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2">
@@ -1787,9 +1817,8 @@ export default function GroupDetailPage() {
                 </span>
               </div>
             )}
-          </div>
         </div>
-      </div>
+      </UnifiedTopicCard>
     );
   };
 
@@ -2127,159 +2156,155 @@ export default function GroupDetailPage() {
 
         {/* 中间：话题和日志 - 可滚动区域 */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
-            {/* 固定的标签页头部 */}
-            <div className="flex-shrink-0 mb-4">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="topics" className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  话题列表
-                </TabsTrigger>
-                <TabsTrigger value="stocks" className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4" />
-                  股票分析
-                </TabsTrigger>
-                <TabsTrigger value="logs" className="flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
-                  任务日志
-                </TabsTrigger>
-              </TabsList>
-            </div>
-
-            {/* 话题内容区域 */}
-            <TabsContent value="topics" className="flex-1 flex flex-col min-h-0">
-              {/* 可滚动的话题列表区域 */}
-              <div className="flex-1 flex flex-col min-h-0">
-                {topicsLoading ? (
-                  <div className="flex-1 flex items-center justify-center">
-                    <p className="text-muted-foreground">加载中...</p>
-                  </div>
-                ) : topics.length === 0 ? (
-                  <div className="flex-1 flex items-center justify-center">
-                    <p className="text-muted-foreground">
-                      {searchTerm ? '没有找到匹配的话题' : '暂无话题数据，请先进行数据采集'}
-                    </p>
-                  </div>
-                ) : (
+          <MiddlePanelShell
+            value={activeTab}
+            onValueChange={setActiveTab}
+            tabs={[
+              {
+                value: 'topics',
+                label: (
                   <>
-                    {/* 使用ScrollArea组件实现美化的滚动条 */}
-                    <ScrollArea ref={scrollAreaRef} className="flex-1 w-full">
-                      <div className="topic-cards-container space-y-3 pr-4 max-w-full" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-                        {topics.map((topic: any) => (
-                          <div key={topic.topic_id} style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
-                            <TopicCard
-                              topic={topic}
-                              searchTerm={searchTerm}
-                              // 这里同样使用字符串形式的 topic_id 作为索引
-                              topicDetail={topicDetails.get(String((topic as any).topic_id || ''))}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-
-                    {/* 固定的分页控件 */}
-                    {totalPages > 1 && (
-                      <div className="flex-shrink-0 flex items-center justify-center gap-3 pt-4 border-t border-gray-200 mt-4">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                          disabled={currentPage === 1}
-                        >
-                          上一页
-                        </Button>
-
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-gray-600">第</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max={totalPages}
-                            defaultValue={currentPage}
-                            key={currentPage} // 强制重新渲染以更新defaultValue
-                            onChange={(e) => {
-                              // 允许用户自由输入，不进行页面跳转
-                              // 页面跳转只在Enter键或失焦时触发
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                const value = e.currentTarget.value;
-                                if (value === '') {
-                                  return;
-                                }
-                                const page = parseInt(value);
-                                if (!isNaN(page) && page >= 1 && page <= totalPages) {
-                                  setCurrentPage(page);
-                                }
-                              }
-                            }}
-                            onBlur={(e) => {
-                              const value = e.target.value;
-                              // 失去焦点时进行页面跳转或恢复
-                              if (value === '' || isNaN(parseInt(value))) {
-                                // 输入为空或无效，恢复到当前页
-                                e.target.value = currentPage.toString();
-                              } else {
-                                const page = parseInt(value);
-                                if (page >= 1 && page <= totalPages) {
-                                  // 有效页面，进行跳转
-                                  setCurrentPage(page);
-                                } else {
-                                  // 超出范围，恢复到当前页
-                                  e.target.value = currentPage.toString();
-                                }
-                              }
-                            }}
-                            className="w-16 px-2 py-1 text-sm text-center border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          />
-                          <span className="text-sm text-gray-600">页，共 {totalPages} 页</span>
-                        </div>
-
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                          disabled={currentPage === totalPages}
-                        >
-                          下一页
-                        </Button>
-                      </div>
-                    )}
+                    <MessageSquare className="h-4 w-4" />
+                    <span>话题列表</span>
                   </>
-                )}
-              </div>
-            </TabsContent>
+                ),
+                content: (
+                  <div className="flex-1 flex flex-col min-h-0 h-full">
+                    {topicsLoading ? (
+                      <div className="flex-1 flex items-center justify-center">
+                        <p className="text-muted-foreground">加载中...</p>
+                      </div>
+                    ) : topics.length === 0 ? (
+                      <div className="flex-1 flex items-center justify-center">
+                        <p className="text-muted-foreground">
+                          {searchTerm ? '没有找到匹配的话题' : '暂无话题数据，请先进行数据采集'}
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <ScrollArea ref={scrollAreaRef} className="flex-1 w-full">
+                          <div className="topic-cards-container space-y-3 pr-4 max-w-full" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
+                            {topics.map((topic: any) => (
+                              <div key={topic.topic_id} style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
+                                <TopicCard
+                                  topic={topic}
+                                  searchTerm={searchTerm}
+                                  topicDetail={topicDetails.get(String((topic as any).topic_id || ''))}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
 
-            {/* 股票分析内容区域 */}
-            <TabsContent value="stocks" className="flex-1 flex flex-col min-h-0">
-              <StockDashboard
-                groupId={groupId}
-                onTaskCreated={(taskId) => setCurrentTaskId(taskId)}
-                hideScanActions={true}
-              />
-            </TabsContent>
+                        {totalPages > 1 && (
+                          <div className="flex-shrink-0 flex items-center justify-center gap-3 pt-4 border-t border-gray-200 mt-4">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                              disabled={currentPage === 1}
+                            >
+                              上一页
+                            </Button>
 
-            {/* 任务日志区域 */}
-            <TabsContent value="logs" className="flex-1 flex flex-col min-h-0">
-              <div className="flex-1 min-h-0">
-                <div className="h-full bg-gradient-to-br from-slate-50 to-gray-100 rounded-lg border border-gray-200 overflow-hidden">
-                  <TaskLogViewer
-                    taskId={currentTaskId}
-                    onClose={() => setCurrentTaskId(null)}
-                    inline={true}
-                    onTaskStop={() => {
-                      setTimeout(() => {
-                        loadGroupStats();
-                        loadTopics();
-                        loadRecentTasks();
-                      }, 1000);
-                    }}
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-600">第</span>
+                              <input
+                                type="number"
+                                min="1"
+                                max={totalPages}
+                                defaultValue={currentPage}
+                                key={currentPage}
+                                onChange={() => { }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    const value = e.currentTarget.value;
+                                    if (value === '') return;
+                                    const page = parseInt(value);
+                                    if (!isNaN(page) && page >= 1 && page <= totalPages) {
+                                      setCurrentPage(page);
+                                    }
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '' || isNaN(parseInt(value))) {
+                                    e.target.value = currentPage.toString();
+                                  } else {
+                                    const page = parseInt(value);
+                                    if (page >= 1 && page <= totalPages) setCurrentPage(page);
+                                    else e.target.value = currentPage.toString();
+                                  }
+                                }}
+                                className="w-16 px-2 py-1 text-sm text-center border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              />
+                              <span className="text-sm text-gray-600">页，共 {totalPages} 页</span>
+                            </div>
+
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                              disabled={currentPage === totalPages}
+                            >
+                              下一页
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ),
+                contentClassName: 'h-full flex flex-col min-h-0',
+              },
+              {
+                value: 'stocks',
+                label: (
+                  <>
+                    <TrendingUp className="h-4 w-4" />
+                    <span>股票分析</span>
+                  </>
+                ),
+                content: (
+                  <StockDashboard
+                    groupId={groupId}
+                    onTaskCreated={(taskId) => setCurrentTaskId(taskId)}
+                    hideScanActions={true}
+                    surfaceVariant="group-consistent"
                   />
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
+                ),
+                contentClassName: 'h-full flex flex-col min-h-0',
+              },
+              {
+                value: 'logs',
+                label: (
+                  <>
+                    <FileText className="h-4 w-4" />
+                    <span>任务日志</span>
+                  </>
+                ),
+                content: (
+                  <div className="flex-1 min-h-0 h-full" ref={logsSectionRef}>
+                    <div className={middlePanelTokens.logSurface}>
+                      <TaskLogViewer
+                        taskId={currentTaskId}
+                        onClose={() => setCurrentTaskId(null)}
+                        inline={true}
+                        onTaskStop={() => {
+                          setTimeout(() => {
+                            loadGroupStats();
+                            loadTopics();
+                            loadRecentTasks();
+                          }, 1000);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ),
+                contentClassName: 'h-full flex flex-col min-h-0',
+              },
+            ]}
+          />
         </div>
 
 
@@ -2292,15 +2317,15 @@ export default function GroupDetailPage() {
                 {/* 模式切换 */}
                 <Tabs value={activeMode} onValueChange={setActiveMode} className="space-y-4">
                   <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="crawl" className="text-xs">
+                    <TabsTrigger value="crawl" className="text-xs focus:outline-none focus-visible:outline-none focus-visible:ring-0">
                       <MessageSquare className="h-3 w-3 mr-1" />
                       采集
                     </TabsTrigger>
-                    <TabsTrigger value="download" className="text-xs">
+                    <TabsTrigger value="download" className="text-xs focus:outline-none focus-visible:outline-none focus-visible:ring-0">
                       <Download className="h-3 w-3 mr-1" />
                       下载
                     </TabsTrigger>
-                    <TabsTrigger value="analyze" className="text-xs">
+                    <TabsTrigger value="analyze" className="text-xs focus:outline-none focus-visible:outline-none focus-visible:ring-0">
                       <TrendingUp className="h-3 w-3 mr-1" />
                       分析
                     </TabsTrigger>

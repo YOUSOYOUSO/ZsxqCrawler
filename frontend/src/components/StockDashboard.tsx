@@ -1,20 +1,28 @@
 'use client';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { format } from "date-fns";
+import { cn } from "@/lib/utils";
+import SafeImage from '@/components/SafeImage';
 import {
-    TrendingUp, BarChart3, Search, RefreshCw,
+    TrendingUp, BarChart3, Search,
     Activity, Target, Flame,
     Zap, Clock, ChevronRight, ChevronLeft, Loader2,
     Sparkles, Settings, Send, History, Bot, FileText as FileTextIcon, Users,
-    Play
+    Play, CalendarIcon, Info, Trash2
 } from 'lucide-react';
 import TaskLogViewer from './TaskLogViewer';
 import StockDetailDrawer from './StockDetailDrawer';
@@ -23,12 +31,153 @@ interface StockDashboardProps {
     groupId?: number | string; // Optional for global mode
     mode?: 'group' | 'global';
     onTaskCreated?: (taskId: string) => void;
+    onDataChanged?: () => void | Promise<void>;
     hideScanActions?: boolean;
+    externalSearchTerm?: string;
+    initialView?: 'overview' | 'winrate' | 'sector' | 'signals' | 'ai';
+    allowedViews?: Array<'overview' | 'winrate' | 'sector' | 'signals' | 'ai'>;
+    surfaceVariant?: 'default' | 'group-consistent';
+    hideSummaryCards?: boolean;
+}
+
+interface SectorTopicItem {
+    topic_id: string | number;
+    create_time: string;
+    text_snippet: string;
+    full_text?: string;
+    matched_keywords: string[];
+    stocks: Array<{ stock_code: string; stock_name: string }>;
 }
 
 
+const getToday = () => format(new Date(), 'yyyy-MM-dd');
+const getPastDate = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return format(d, 'yyyy-MM-dd');
+};
+
+/* ────────── Time Range Picker Component ────────── */
+function TimeRangePicker({
+    range, start, end,
+    onRangeChange, onStartChange, onEndChange
+}: {
+    range: string; start: string; end: string;
+    onRangeChange: (r: any) => void;
+    onStartChange: (s: string) => void;
+    onEndChange: (e: string) => void;
+}) {
+    const presets = ['10d', '20d', '30d', '60d', '180d', '365d'];
+    const formatPresetLabel = (daysStr: string) => {
+        const days = parseInt(daysStr.replace('d', ''), 10);
+        if (days === 365) return '近1年';
+        return `近${days}天`;
+    };
+
+    const applyPreset = (daysStr: string) => {
+        const days = parseInt(daysStr.replace('d', ''));
+        onRangeChange(daysStr);
+        onStartChange(getPastDate(days));
+        onEndChange(getToday());
+    };
+
+    const handleDateSelect = (r: { from?: Date; to?: Date } | undefined) => {
+        onRangeChange('custom');
+        if (!r) {
+            onStartChange('');
+            onEndChange('');
+            return;
+        }
+        onStartChange(r.from ? format(r.from, 'yyyy-MM-dd') : '');
+        onEndChange(r.to ? format(r.to, 'yyyy-MM-dd') : '');
+
+    };
+
+    const selectedFrom = start ? new Date(start) : undefined;
+    const selectedTo = end ? new Date(end) : undefined;
+
+    return (
+        <div className="flex items-center gap-2 flex-wrap bg-muted/20 p-1.5 rounded-md">
+            <span className="text-xs text-muted-foreground ml-1">时间:</span>
+            <div className="flex gap-1">
+                {presets.map(p => (
+                    <Button
+                        key={p}
+                        size="sm"
+                        variant={range === p ? 'secondary' : 'ghost'}
+                        className={`h-6 px-2 text-xs ${range === p ? 'bg-background shadow-sm text-primary font-medium' : 'text-muted-foreground'}`}
+                        onClick={() => applyPreset(p)}
+                    >
+                        {formatPresetLabel(p)}
+                    </Button>
+                ))}
+            </div>
+            <div className="w-px h-4 bg-border/50 mx-1" />
+
+            <Popover>
+                <PopoverTrigger asChild>
+                    <Button
+                        id="date"
+                        variant={"outline"}
+                        size="sm"
+                        className={cn(
+                            "h-6 justify-start text-left font-normal px-2 text-[10px]",
+                            !start && "text-muted-foreground"
+                        )}
+                    >
+                        <CalendarIcon className="mr-2 h-3 w-3" />
+                        {start ? (
+                            end ? (
+                                <>
+                                    {start} - {end}
+                                </>
+                            ) : (
+                                start
+                            )
+                        ) : (
+                            <span>选择日期</span>
+                        )}
+                    </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="end">
+                    <Calendar
+                        initialFocus
+                        mode="range"
+                        defaultMonth={selectedFrom}
+                        selected={{ from: selectedFrom, to: selectedTo }}
+                        onSelect={handleDateSelect}
+                        numberOfMonths={2}
+                        className="p-3"
+                    />
+                </PopoverContent>
+            </Popover>
+        </div>
+    );
+}
+
+function HeaderInfo({ text }: { text: string }) {
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    className="inline-flex items-center justify-center text-muted-foreground hover:text-foreground"
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label="说明"
+                >
+                    <Info className="h-3.5 w-3.5" />
+                </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-2 text-xs leading-relaxed">
+                {text}
+            </PopoverContent>
+        </Popover>
+    );
+}
+
 /* ────────── heat bar for sector ────────── */
 function HeatBar({ value, max, label }: { value: number; max: number; label: string }) {
+
     const pct = max > 0 ? (value / max) * 100 : 0;
     const intensity = Math.min(pct / 100, 1);
     return (
@@ -88,9 +237,25 @@ function simpleMarkdown(md: string): string {
 }
 
 /* ═══════════════  MAIN COMPONENT  ═══════════════ */
-export default function StockDashboard({ groupId, mode = 'group', onTaskCreated, hideScanActions = false }: StockDashboardProps) {
+export default function StockDashboard({
+    groupId,
+    mode = 'group',
+    onTaskCreated,
+    onDataChanged,
+    hideScanActions = false,
+    externalSearchTerm,
+    initialView = 'overview',
+    allowedViews,
+    surfaceVariant = 'default',
+    hideSummaryCards = false,
+}: StockDashboardProps) {
     const isGlobal = mode === 'global';
-    const [activeView, setActiveView] = useState<'overview' | 'winrate' | 'sector' | 'signals' | 'ai'>('overview');
+    const [activeView, setActiveView] = useState<'overview' | 'winrate' | 'sector' | 'signals' | 'ai'>(initialView);
+    const effectiveAllowedViews = useMemo(() => (
+        allowedViews && allowedViews.length > 0
+            ? allowedViews
+            : ['overview', 'winrate', 'sector', 'signals', 'ai']
+    ), [allowedViews]);
     const [stats, setStats] = useState<any>(null);
     const [mentions, setMentions] = useState<any[]>([]); // Keeping for legacy or unused? Or maybe remove? Let's keep for search/pagination compatibility if needed or replace.
     const [topics, setTopics] = useState<any[]>([]); // New state for topics
@@ -98,22 +263,54 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
     const [sectors, setSectors] = useState<any[]>([]);
     const [signals, setSignals] = useState<any[]>([]);
     const [globalGroups, setGlobalGroups] = useState<any[]>([]);
+    const [groupMetaMap, setGroupMetaMap] = useState<Record<string, any>>({});
+    const [featureFlags, setFeatureFlags] = useState<Record<string, any>>({});
     const [lastError, setLastError] = useState<string | null>(null);
 
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(false);
     const [scanTaskId, setScanTaskId] = useState<string | null>(null);
     const [showTaskLog, setShowTaskLog] = useState(false);
+    const [deletingGroupId, setDeletingGroupId] = useState<number | null>(null);
 
     const [mentionPage, setMentionPage] = useState(1);
     const [mentionTotal, setMentionTotal] = useState(0);
     const [returnPeriod, setReturnPeriod] = useState('return_5d');
-    const [searchStock, setSearchStock] = useState('');
+    const [searchStock, setSearchStock] = useState(externalSearchTerm || '');
 
-    // detail drawer state
+    // Time range filter state - default 30d (approx 20 working days)
+    const [winRateRange, setWinRateRange] = useState<string>('30d');
+    const [winRateStart, setWinRateStart] = useState<string>(getPastDate(30));
+    const [winRateEnd, setWinRateEnd] = useState<string>(getToday());
+
+    const [sectorRange, setSectorRange] = useState<string>('30d');
+    const [sectorStart, setSectorStart] = useState<string>(getPastDate(30));
+    const [sectorEnd, setSectorEnd] = useState<string>(getToday());
+
+    const [signalRange, setSignalRange] = useState<string>('30d');
+    const [signalStart, setSignalStart] = useState<string>(getPastDate(30));
+    const [signalEnd, setSignalEnd] = useState<string>(getToday());
+
+    // Win rate pagination and sort state
+    const [winRatePage, setWinRatePage] = useState(1);
+    const [winRateTotal, setWinRateTotal] = useState(0);
+    const winRatePageSize = 20;
+    const [winRateSortColumn, setWinRateSortColumn] = useState<string>('win_rate');
+    const [winRateSortOrder, setWinRateSortOrder] = useState<'desc' | 'asc'>('desc');
+    const [winRateMinMentions, setWinRateMinMentions] = useState<number>(2);
+    const [signalMinMentions, setSignalMinMentions] = useState<number>(2);
+
     const [selectedStock, setSelectedStock] = useState<string | null>(null);
-    const [stockEvents, setStockEvents] = useState<any[]>([]);
-    const [eventsLoading, setEventsLoading] = useState(false);
+    const [expandedOverviewTopics, setExpandedOverviewTopics] = useState<Set<string>>(new Set());
+    const [selectedSector, setSelectedSector] = useState<any | null>(null);
+    const [sectorTopics, setSectorTopics] = useState<SectorTopicItem[]>([]);
+    const [sectorTopicsTotal, setSectorTopicsTotal] = useState(0);
+    const [sectorTopicsPage, setSectorTopicsPage] = useState(1);
+    const [sectorTopicsLoading, setSectorTopicsLoading] = useState(false);
+    const [sectorTopicsError, setSectorTopicsError] = useState<string | null>(null);
+    const [expandedSectorTopics, setExpandedSectorTopics] = useState<Set<string>>(new Set());
+    const sectorTopicsPageSize = 20;
+    const sectorDrawerScrollRef = useRef<HTMLDivElement>(null);
 
     // AI analysis state
     const [aiConfig, setAiConfig] = useState<any>(null);
@@ -125,6 +322,20 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
     const [aiConfigBaseUrl, setAiConfigBaseUrl] = useState('https://api.deepseek.com');
     const [aiConfigModel, setAiConfigModel] = useState('deepseek-chat');
     const [showAiConfig, setShowAiConfig] = useState(false);
+    const sectorMaxMentions = useMemo(
+        () => sectors.reduce((max: number, item: any) => Math.max(max, Number(item?.total_mentions || 0)), 0),
+        [sectors]
+    );
+
+    const getGlobalGroupDisplayName = useCallback((group: any) => {
+        const gid = String(group?.group_id ?? '').trim();
+        const rawName = String(group?.group_name ?? '').trim();
+        const metaName = String(groupMetaMap[gid]?.name ?? '').trim();
+        const isFallbackName = !rawName || rawName === gid || /^group\s+\d+$/i.test(rawName);
+        if (!isFallbackName) return rawName;
+        if (metaName) return metaName;
+        return rawName || `Group ${gid}`;
+    }, [groupMetaMap]);
 
     /* ── loaders ── */
     const loadStats = useCallback(async () => {
@@ -144,13 +355,14 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
         if (isGlobal) {
             // Global mentions are not supported in the same way, we might load groups instead
             const res = await apiClient.getGlobalGroups();
-            setGlobalGroups(res || []);
+            const rows = Array.isArray(res) ? res : (res?.data || res?.groups || []);
+            setGlobalGroups(rows);
             return;
         }
         try {
             console.log('[StockDashboard] Loading topics...', { groupId, page: mentionPage });
             // Use getStockTopics instead of getStockMentions
-            const res = await apiClient.getStockTopics(groupId!, mentionPage, 20);
+            const res = (await apiClient.getStockTopics(groupId!, mentionPage, 20)) as any;
 
             console.log('[StockDashboard] Topics loaded:', res);
             setTopics(res.items || []);
@@ -179,56 +391,171 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
         }
     }, [groupId, mentionPage, searchStock, isGlobal]);
 
+    const loadGroupMeta = useCallback(async () => {
+        if (!isGlobal) return;
+        try {
+            const res = await apiClient.getGroups();
+            const rows = res?.groups || [];
+            const map = rows.reduce((acc: Record<string, any>, g: any) => {
+                acc[String(g.group_id)] = g;
+                return acc;
+            }, {});
+            setGroupMetaMap(map);
+        } catch (err) {
+            console.warn('[StockDashboard] Failed to load group meta:', err);
+        }
+    }, [isGlobal]);
+
+    const loadFeatures = useCallback(async () => {
+        if (!isGlobal) return;
+        try {
+            const features = await apiClient.getFeatures();
+            setFeatureFlags(features || {});
+        } catch {
+            setFeatureFlags({});
+        }
+    }, [isGlobal]);
+
+    // Helper to compute start_date from time range - REMOVED, using explicit start/end state
+
+
     const loadWinRate = useCallback(async () => {
         try {
-            console.log('[StockDashboard] Loading win rate...');
-            const res = isGlobal
-                ? await apiClient.getGlobalWinRate(2, returnPeriod, 50)
-                : await apiClient.getStockWinRate(groupId!, {
-                    min_mentions: 2,
+            console.log('[StockDashboard] Loading win rate...', { start: winRateStart, end: winRateEnd, sort: winRateSortColumn, order: winRateSortOrder });
+            if (isGlobal) {
+                const res = await apiClient.getGlobalWinRate(
+                    winRateMinMentions,
+                    returnPeriod,
+                    1000,
+                    winRateStart,
+                    winRateEnd,
+                    winRateSortColumn,
+                    winRateSortOrder,
+                    winRatePage,
+                    winRatePageSize
+                );
+                setWinRate(res?.data || []);
+                setWinRateTotal(res?.total || 0);
+            } else {
+                const res = await apiClient.getStockWinRate(groupId!, {
+                    min_mentions: winRateMinMentions,
                     return_period: returnPeriod,
-                    limit: 50,
+                    limit: 500,
+                    start_date: winRateStart,
+                    end_date: winRateEnd,
+                    page: winRatePage,
+                    page_size: winRatePageSize,
+                    sort_by: winRateSortColumn,
+                    order: winRateSortOrder,
                 });
-            console.log('[StockDashboard] Win rate loaded:', res?.length);
-            setWinRate(res || []);
+                // Handle both paginated (dict) and legacy (array) responses
+                if (res && res.data && typeof res.total === 'number') {
+                    setWinRate(res.data);
+                    setWinRateTotal(res.total);
+                } else if (Array.isArray(res)) {
+                    setWinRate(res);
+                    setWinRateTotal(res.length);
+                } else {
+                    setWinRate([]);
+                    setWinRateTotal(0);
+                }
+            }
         } catch (err) {
             console.error('[StockDashboard] Failed to load win rate:', err);
         }
-    }, [groupId, returnPeriod, isGlobal]);
+    }, [groupId, returnPeriod, isGlobal, winRateStart, winRateEnd, winRatePage, winRatePageSize, winRateSortColumn, winRateSortOrder, winRateMinMentions]);
 
     const loadSectors = useCallback(async () => {
         try {
-            console.log('[StockDashboard] Loading sectors...');
+            console.log('[StockDashboard] Loading sectors...', { start: sectorStart, end: sectorEnd });
             const res = isGlobal
-                ? await apiClient.getGlobalSectorHeat()
-                : await apiClient.getSectorHeat(groupId!);
+                ? await apiClient.getGlobalSectorHeat(sectorStart, sectorEnd)
+                : await apiClient.getSectorHeat(groupId!, sectorStart, sectorEnd);
             console.log('[StockDashboard] Sectors loaded:', res?.length);
             setSectors(res || []);
         } catch (err) {
             console.error('[StockDashboard] Failed to load sectors:', err);
         }
-    }, [groupId, isGlobal]);
+    }, [groupId, isGlobal, sectorStart, sectorEnd]);
 
     const loadSignals = useCallback(async () => {
         try {
-            console.log('[StockDashboard] Loading signals...');
+            console.log('[StockDashboard] Loading signals...', { start: signalStart, end: signalEnd });
+            const lookbackDays = 30; // Default fallback if needed, but we use explicit dates now
             const res = isGlobal
-                ? await apiClient.getGlobalSignals(7, 2)
-                : await apiClient.getStockSignals(groupId!, 7, 2);
+                ? await apiClient.getGlobalSignals(lookbackDays, signalMinMentions, signalStart, signalEnd)
+                : await apiClient.getStockSignals(groupId!, lookbackDays, signalMinMentions, signalStart, signalEnd);
             console.log('[StockDashboard] Signals loaded:', res?.length);
             setSignals(res || []);
         } catch (err) {
             console.error('[StockDashboard] Failed to load signals:', err);
         }
-    }, [groupId, isGlobal]);
+    }, [groupId, isGlobal, signalStart, signalEnd, signalMinMentions]);
+
+    const loadSectorTopics = useCallback(async () => {
+        if (!selectedSector?.sector) return;
+        if (isGlobal && featureFlags.global_sector_topics === false) {
+            setSectorTopics([]);
+            setSectorTopicsTotal(0);
+            setSectorTopicsError('当前后端版本不支持全局板块详情接口');
+            return;
+        }
+
+        setSectorTopicsLoading(true);
+        setSectorTopicsError(null);
+        try {
+            const res = isGlobal
+                ? await apiClient.getGlobalSectorTopics({
+                    sector: selectedSector.sector,
+                    start_date: sectorStart,
+                    end_date: sectorEnd,
+                    page: sectorTopicsPage,
+                    page_size: sectorTopicsPageSize,
+                })
+                : await apiClient.getSectorTopics(groupId!, {
+                    sector: selectedSector.sector,
+                    start_date: sectorStart,
+                    end_date: sectorEnd,
+                    page: sectorTopicsPage,
+                    page_size: sectorTopicsPageSize,
+                });
+            setSectorTopics(res?.items || []);
+            setSectorTopicsTotal(res?.total || 0);
+        } catch (err) {
+            console.error('[StockDashboard] Failed to load sector topics:', err);
+            setSectorTopics([]);
+            setSectorTopicsTotal(0);
+            const msg = err instanceof Error ? err.message : '';
+            if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+                setSectorTopicsError('后端未提供 /api/global/sector-topics，请确认服务已更新并重启');
+            } else {
+                setSectorTopicsError('加载失败，请重试');
+            }
+        } finally {
+            setSectorTopicsLoading(false);
+        }
+    }, [groupId, isGlobal, featureFlags.global_sector_topics, selectedSector?.sector, sectorStart, sectorEnd, sectorTopicsPage]);
 
     const loadAll = useCallback(async () => {
         setLoading(true);
-        await Promise.all([loadStats(), loadMentions(), loadSectors()]);
+        const jobs: Array<Promise<any>> = [loadStats(), loadMentions(), loadSectors()];
+        if (isGlobal) {
+            jobs.push(loadGroupMeta());
+        }
+        await Promise.all(jobs);
         setLoading(false);
-    }, [loadStats, loadMentions, loadSectors]);
+    }, [loadStats, loadMentions, loadSectors, loadGroupMeta, isGlobal]);
 
     useEffect(() => { loadAll(); }, [loadAll]);
+    useEffect(() => { loadFeatures(); }, [loadFeatures]);
+
+    // Sync external search term from parent component
+    useEffect(() => {
+        if (externalSearchTerm !== undefined) {
+            setSearchStock(externalSearchTerm);
+            setMentionPage(1);
+        }
+    }, [externalSearchTerm]);
 
     // For local mentions pagination
     useEffect(() => {
@@ -237,8 +564,31 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
 
     useEffect(() => {
         if (activeView === 'winrate') loadWinRate();
+        else if (activeView === 'sector') loadSectors();
         else if (activeView === 'signals') loadSignals();
-    }, [activeView, loadWinRate, loadSignals]);
+    }, [activeView, loadWinRate, loadSectors, loadSignals]);
+
+    useEffect(() => {
+        if (!selectedSector) return;
+        loadSectorTopics();
+    }, [selectedSector, loadSectorTopics]);
+
+    useEffect(() => {
+        if (!selectedSector) return;
+        setSectorTopicsPage(1);
+        setExpandedSectorTopics(new Set());
+    }, [selectedSector?.sector, sectorStart, sectorEnd, selectedSector]);
+
+    useEffect(() => {
+        if (!selectedSector) return;
+        sectorDrawerScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }, [sectorTopicsPage, selectedSector]);
+
+    useEffect(() => {
+        if (!effectiveAllowedViews.includes(activeView)) {
+            setActiveView(effectiveAllowedViews[0]);
+        }
+    }, [activeView, effectiveAllowedViews]);
 
     /* ── scan ── */
     const handleScan = async (force = false) => {
@@ -265,11 +615,27 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
         }
     };
 
-    const handleTaskComplete = () => {
-        setScanning(false);
-        loadAll();
-        toast.success("数据分析完成");
-        // Don't close log automatically, let user see result
+    const handleClearGroupTopics = async (group: any) => {
+        const gid = Number(group?.group_id);
+        if (!Number.isFinite(gid)) {
+            toast.error('群组 ID 无效，无法删除');
+            return;
+        }
+
+        setDeletingGroupId(gid);
+        try {
+            await apiClient.clearTopicDatabase(gid);
+            toast.success(`已删除群组 ${gid} 的所有话题数据`);
+            await Promise.all([loadStats(), loadMentions(), loadSectors(), loadSignals(), loadWinRate()]);
+            if (onDataChanged) {
+                await onDataChanged();
+            }
+        } catch (err: any) {
+            const detail = err?.message || '未知错误';
+            toast.error(`删除失败: ${detail}`);
+        } finally {
+            setDeletingGroupId(null);
+        }
     };
 
     /* ── Stock Detail Logic (mostly specific to Group mode or if Global supports drill down) ── */
@@ -280,22 +646,17 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
     // The existing 'getStockEvents' requires groupId.
     // Let's assume Global Detail View is a future enhancement or disable it for global currently.
     // Adjusted: We will allow clicking but wrap in try/catch or disable if global.
-    const openStockDetail = async (stockCode: string) => {
-        if (isGlobal) {
-            toast.info("全局模式下暂不支持查看个股详细事件");
-            return;
-        }
-
+    const openStockDetail = (stockCode: string) => {
         setSelectedStock(stockCode);
-        setEventsLoading(true);
-        try {
-            const res = await apiClient.getStockEvents(groupId!, stockCode);
-            setStockEvents(res?.events || []);
-        } catch {
-            setStockEvents([]);
-        } finally {
-            setEventsLoading(false);
-        }
+    };
+    const toggleOverviewTopicExpand = (topicId: string | number) => {
+        const id = String(topicId);
+        setExpandedOverviewTopics(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
     };
 
     /* ── helpers ── */
@@ -309,6 +670,21 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
         if (v == null) return 'text-muted-foreground';
         return v > 0 ? 'text-emerald-500' : v < 0 ? 'text-red-500' : 'text-muted-foreground';
     };
+
+    const sectorUniqueKeywords = new Set(sectorTopics.flatMap((t) => t.matched_keywords));
+    const sectorMonthlyStats = selectedSector
+        ? Object.entries(selectedSector.daily_mentions || {}).reduce((acc: Record<string, { total: number; days: number; peak: number }>, [date, count]) => {
+            const monthKey = String(date).slice(0, 7);
+            if (!acc[monthKey]) {
+                acc[monthKey] = { total: 0, days: 0, peak: 0 };
+            }
+            const numericCount = Number(count || 0);
+            acc[monthKey].total += numericCount;
+            acc[monthKey].days += 1;
+            acc[monthKey].peak = Math.max(acc[monthKey].peak, numericCount);
+            return acc;
+        }, {})
+        : {};
 
     const totalMentionPages = Math.ceil(mentionTotal / 20) || 1;
 
@@ -335,7 +711,7 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
     }
 
     return (
-        <div className="flex flex-col gap-4 h-full relative">
+        <div className={cn('flex flex-col h-full relative', surfaceVariant === 'group-consistent' ? 'gap-3' : 'gap-4')}>
             {/* ─── Task Log Overlay/Panel ─── */}
             {!hideScanActions && showTaskLog && scanTaskId && (
                 <div className={`
@@ -365,63 +741,50 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
             )}
 
             {/* ─── Header cards ─── */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <Card className="bg-gradient-to-br from-violet-500/10 to-purple-500/5 border-violet-500/20">
-                    <CardContent className="p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                            {isGlobal ? <Users className="h-4 w-4 text-violet-400" /> : <Activity className="h-4 w-4 text-violet-400" />}
-                            <span className="text-xs text-muted-foreground">{isGlobal ? '总群组数' : '总提及'}</span>
-                        </div>
-                        <p className="text-2xl font-bold">{isGlobal ? stats?.group_count ?? 0 : stats?.total_mentions ?? 0}</p>
-                    </CardContent>
-                </Card>
-                <Card className="bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border-blue-500/20">
-                    <CardContent className="p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                            <Target className="h-4 w-4 text-blue-400" />
-                            <span className="text-xs text-muted-foreground">涉及股票</span>
-                        </div>
-                        <p className="text-2xl font-bold">{stats?.unique_stocks ?? 0}</p>
-                    </CardContent>
-                </Card>
-                <Card className="bg-gradient-to-br from-emerald-500/10 to-green-500/5 border-emerald-500/20">
-                    <CardContent className="p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                            <TrendingUp className="h-4 w-4 text-emerald-400" />
-                            <span className="text-xs text-muted-foreground">5日胜率</span>
-                        </div>
-                        <p className="text-2xl font-bold">
-                            {stats?.overall_win_rate_5d != null ? `${stats.overall_win_rate_5d.toFixed(1)}%` : '—'}
-                        </p>
-                    </CardContent>
-                </Card>
-                <Card className="bg-gradient-to-br from-orange-500/10 to-amber-500/5 border-orange-500/20">
-                    <CardContent className="p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                            <BarChart3 className="h-4 w-4 text-orange-400" />
-                            <span className="text-xs text-muted-foreground">{isGlobal ? '总表现计算' : '已计算'}</span>
-                        </div>
-                        <p className="text-2xl font-bold">{isGlobal ? stats?.total_performance ?? 0 : stats?.performance_calculated ?? 0}</p>
-                    </CardContent>
-                </Card>
-            </div>
-
-            {/* ─── Top mentioned badges (Group Mode Only) ─── */}
-            {!isGlobal && stats?.top_mentioned && stats.top_mentioned.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                    <span className="text-xs text-muted-foreground self-center mr-1">🔥 高频:</span>
-                    {stats.top_mentioned.slice(0, 12).map((s: any) => (
-                        <Badge
-                            key={s.code}
-                            variant="secondary"
-                            className="cursor-pointer hover:bg-primary/20 transition-colors text-xs"
-                            onClick={() => openStockDetail(s.code)}
-                        >
-                            {s.name} <span className="ml-1 opacity-60">{s.count}</span>
-                        </Badge>
-                    ))}
+            {!hideSummaryCards && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <Card className="bg-gradient-to-br from-violet-500/10 to-purple-500/5 border-violet-500/20">
+                        <CardContent className="p-3">
+                            <div className="flex items-center gap-2 mb-1">
+                                {isGlobal ? <Users className="h-4 w-4 text-violet-400" /> : <Activity className="h-4 w-4 text-violet-400" />}
+                                <span className="text-xs text-muted-foreground">{isGlobal ? '总群组数' : '总提及'}</span>
+                            </div>
+                            <p className="text-2xl font-bold">{isGlobal ? stats?.group_count ?? 0 : stats?.total_mentions ?? 0}</p>
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border-blue-500/20">
+                        <CardContent className="p-3">
+                            <div className="flex items-center gap-2 mb-1">
+                                <Target className="h-4 w-4 text-blue-400" />
+                                <span className="text-xs text-muted-foreground">涉及股票</span>
+                            </div>
+                            <p className="text-2xl font-bold">{stats?.unique_stocks ?? 0}</p>
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-gradient-to-br from-emerald-500/10 to-green-500/5 border-emerald-500/20">
+                        <CardContent className="p-3">
+                            <div className="flex items-center gap-2 mb-1">
+                                <TrendingUp className="h-4 w-4 text-emerald-400" />
+                                <span className="text-xs text-muted-foreground">5日胜率</span>
+                            </div>
+                            <p className="text-2xl font-bold">
+                                {stats?.overall_win_rate_5d != null ? `${stats.overall_win_rate_5d.toFixed(1)}%` : '—'}
+                            </p>
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-gradient-to-br from-orange-500/10 to-amber-500/5 border-orange-500/20">
+                        <CardContent className="p-3">
+                            <div className="flex items-center gap-2 mb-1">
+                                <BarChart3 className="h-4 w-4 text-orange-400" />
+                                <span className="text-xs text-muted-foreground">{isGlobal ? '总表现计算' : '已计算'}</span>
+                            </div>
+                            <p className="text-2xl font-bold">{isGlobal ? stats?.total_performance ?? 0 : stats?.performance_calculated ?? 0}</p>
+                        </CardContent>
+                    </Card>
                 </div>
             )}
+
+            {/* 🔥 高频 section removed per user request */}
 
             {/* ─── Action bar ─── */}
             <div className="flex flex-col gap-3">
@@ -447,73 +810,94 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                 )}
 
                 {/* Row 2: Navigation Buttons (Evenly Distributed) */}
-                <div className="grid grid-cols-5 gap-2">
-                    <Button
-                        size="sm"
-                        variant={activeView === 'overview' ? 'default' : 'ghost'}
-                        onClick={() => setActiveView('overview')}
-                        className="gap-1 w-full"
+                {effectiveAllowedViews.length > 1 && (
+                    <div
+                        className="grid gap-2 mx-auto w-full max-w-[720px]"
+                        style={{ gridTemplateColumns: `repeat(${effectiveAllowedViews.length}, minmax(0, 1fr))` }}
                     >
-                        <Activity className="h-3.5 w-3.5" /> 概览
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={activeView === 'winrate' ? 'default' : 'ghost'}
-                        onClick={() => setActiveView('winrate')}
-                        className="gap-1 w-full"
-                    >
-                        <TrendingUp className="h-3.5 w-3.5" /> 胜率
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={activeView === 'sector' ? 'default' : 'ghost'}
-                        onClick={() => setActiveView('sector')}
-                        className="gap-1 w-full"
-                    >
-                        <Flame className="h-3.5 w-3.5" /> 板块
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={activeView === 'signals' ? 'default' : 'ghost'}
-                        onClick={() => setActiveView('signals')}
-                        className="gap-1 w-full"
-                    >
-                        <Zap className="h-3.5 w-3.5" /> 信号
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant={activeView === 'ai' ? 'default' : 'ghost'}
-                        onClick={() => {
-                            setActiveView('ai');
-                            if (!aiConfig) {
-                                apiClient.getAIConfig().then(setAiConfig).catch(() => { });
-                                if (isGlobal) {
-                                    apiClient.getGlobalAIHistory().then(setAiHistory).catch(() => { });
-                                } else {
-                                    apiClient.getAIHistory(groupId!).then(setAiHistory).catch(() => { });
-                                }
-                            }
-                        }}
-                        className="gap-1 w-full"
-                    >
-                        <Sparkles className="h-3.5 w-3.5" /> AI分析
-                    </Button>
-                </div>
+                        {effectiveAllowedViews.includes('overview') && (
+                            <Button
+                                size="sm"
+                                variant={activeView === 'overview' ? 'default' : 'ghost'}
+                                onClick={() => setActiveView('overview')}
+                                className="gap-1 w-full"
+                            >
+                                <Activity className="h-3.5 w-3.5" /> 概览
+                            </Button>
+                        )}
+                        {effectiveAllowedViews.includes('winrate') && (
+                            <Button
+                                size="sm"
+                                variant={activeView === 'winrate' ? 'default' : 'ghost'}
+                                onClick={() => setActiveView('winrate')}
+                                className="gap-1 w-full"
+                            >
+                                <TrendingUp className="h-3.5 w-3.5" /> 胜率
+                            </Button>
+                        )}
+                        {effectiveAllowedViews.includes('sector') && (
+                            <Button
+                                size="sm"
+                                variant={activeView === 'sector' ? 'default' : 'ghost'}
+                                onClick={() => setActiveView('sector')}
+                                className="gap-1 w-full"
+                            >
+                                <Flame className="h-3.5 w-3.5" /> 板块
+                            </Button>
+                        )}
+                        {effectiveAllowedViews.includes('signals') && (
+                            <Button
+                                size="sm"
+                                variant={activeView === 'signals' ? 'default' : 'ghost'}
+                                onClick={() => setActiveView('signals')}
+                                className="gap-1 w-full"
+                            >
+                                <Zap className="h-3.5 w-3.5" /> 信号
+                            </Button>
+                        )}
+                        {effectiveAllowedViews.includes('ai') && (
+                            <Button
+                                size="sm"
+                                variant={activeView === 'ai' ? 'default' : 'ghost'}
+                                onClick={() => {
+                                    setActiveView('ai');
+                                    if (!aiConfig) {
+                                        apiClient.getAIConfig().then(setAiConfig).catch(() => { });
+                                        if (isGlobal) {
+                                            apiClient.getGlobalAIHistory().then(setAiHistory).catch(() => { });
+                                        } else {
+                                            apiClient.getAIHistory(groupId!).then(setAiHistory).catch(() => { });
+                                        }
+                                    }
+                                }}
+                                className="gap-1 w-full"
+                            >
+                                <Sparkles className="h-3.5 w-3.5" /> AI分析
+                            </Button>
+                        )}
+                    </div>
+                )}
             </div>
 
-            {/* ─── Search Bar (Fixed, below nav, only for Overview) ─── */}
-            {activeView === 'overview' && !isGlobal && (
+            {/* ─── Search Bar (Fixed, below nav, for Overview) ─── */}
+            {activeView === 'overview' && externalSearchTerm === undefined && (
                 <div className="flex items-center gap-2 bg-background z-10">
                     <div className="relative flex-1">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                         <Input
-                            placeholder="搜索股票代码或名称 (支持模糊搜索)..."
+                            placeholder={isGlobal ? "搜索群组名称 / ID..." : "搜索股票代码或名称 (支持模糊搜索)..."}
                             className="pl-9 h-9"
                             value={searchStock}
                             onChange={e => { setSearchStock(e.target.value); setMentionPage(1); }}
                         />
                     </div>
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">共 {mentionTotal} 条{searchStock ? '记录' : '话题'}</span>
+                    {!isGlobal && <span className="text-xs text-muted-foreground whitespace-nowrap">共 {mentionTotal} 条{searchStock ? '记录' : '话题'}</span>}
+                    {isGlobal && searchStock && <span className="text-xs text-muted-foreground whitespace-nowrap">匹配 {globalGroups.filter((g: any) => {
+                        const q = searchStock.toLowerCase();
+                        const name = getGlobalGroupDisplayName(g).toLowerCase();
+                        const gid = String(g.group_id || '');
+                        return name.includes(q) || gid.includes(q);
+                    }).length} / {globalGroups.length} 个群组</span>}
                 </div>
             )}
 
@@ -527,23 +911,81 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                             // Global Groups List
                             <div className="space-y-2">
                                 <h3 className="text-sm font-medium text-muted-foreground">已纳入监控的群组 ({globalGroups.length})</h3>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                    {globalGroups.map((group: any) => (
+                                <div className="space-y-3">
+                                    {(searchStock ? globalGroups.filter((g: any) => {
+                                        const q = searchStock.toLowerCase();
+                                        const name = getGlobalGroupDisplayName(g).toLowerCase();
+                                        const gid = String(g.group_id || '');
+                                        return name.includes(q) || gid.includes(q);
+                                    }) : globalGroups).map((group: any) => (
                                         <Card key={group.group_id} className="hover:border-primary/30 transition-colors">
                                             <CardContent className="p-3">
-                                                <div className="flex justify-between items-start">
-                                                    <div>
-                                                        <div className="font-medium text-sm">{group.group_name || `Group ${group.group_id}`}</div>
-                                                        <div className="text-xs text-muted-foreground mt-1">ID: {group.group_id}</div>
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                                                        {(() => {
+                                                            const meta = groupMetaMap[String(group.group_id)] || {};
+                                                            const avatar = meta?.owner?.avatar_url || meta?.background_url || '';
+                                                            const name = getGlobalGroupDisplayName(group);
+                                                            return (
+                                                                <SafeImage
+                                                                    src={avatar}
+                                                                    alt={name}
+                                                                    className="w-12 h-12 rounded-lg object-cover flex-shrink-0"
+                                                                    fallbackClassName="w-12 h-12 rounded-lg flex-shrink-0"
+                                                                    fallbackText={String(name).slice(0, 2)}
+                                                                    fallbackGradient="from-blue-500 to-indigo-600"
+                                                                />
+                                                            );
+                                                        })()}
+                                                        <div className="min-w-0">
+                                                            <Link href={`/groups/${group.group_id}`} className="font-medium text-sm hover:text-primary transition-colors">
+                                                                {getGlobalGroupDisplayName(group)}
+                                                            </Link>
+                                                            <div className="text-xs text-muted-foreground mt-1">ID: {group.group_id}</div>
+                                                            <div className="mt-2 text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+                                                                <span>股票: {group.unique_stocks || 0}</span>
+                                                                <span>话题: {group.topics_count || group.total_topics || 0}</span>
+                                                                <span>提及: {group.mentions_count || group.total_mentions || 0}</span>
+                                                                <span>最后更新: {group.last_updated || group.latest_topic || '—'}</span>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <Badge variant="outline" className="text-xs">
-                                                        {group.mentions_count || 0} 提及
-                                                    </Badge>
-                                                </div>
-                                                <div className="mt-2 text-xs text-muted-foreground flex gap-3">
-                                                    <span>股票: {group.unique_stocks || 0}</span>
-                                                    <span>话题: {group.topics_count || 0}</span>
-                                                    <span>最后更新: {group.last_updated || '—'}</span>
+
+                                                    <div className="flex flex-col items-end gap-2 shrink-0">
+                                                        <Badge variant="outline" className="text-xs">
+                                                            {group.mentions_count || group.total_mentions || 0} 提及
+                                                        </Badge>
+                                                        <AlertDialog>
+                                                            <AlertDialogTrigger asChild>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="destructive"
+                                                                    className="h-8 px-2 text-xs"
+                                                                    disabled={deletingGroupId === Number(group.group_id)}
+                                                                >
+                                                                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                                                                    {deletingGroupId === Number(group.group_id) ? '删除中...' : '删除所有话题'}
+                                                                </Button>
+                                                            </AlertDialogTrigger>
+                                                            <AlertDialogContent>
+                                                                <AlertDialogHeader>
+                                                                    <AlertDialogTitle className="text-red-600">确认删除话题数据</AlertDialogTitle>
+                                                                    <AlertDialogDescription>
+                                                                        ⚠️ 该操作将删除群组 {group.group_id} 的所有本地话题数据（含评论、用户等关联数据），且不可撤销。
+                                                                    </AlertDialogDescription>
+                                                                </AlertDialogHeader>
+                                                                <AlertDialogFooter>
+                                                                    <AlertDialogCancel>取消</AlertDialogCancel>
+                                                                    <AlertDialogAction
+                                                                        onClick={() => handleClearGroupTopics(group)}
+                                                                        className="bg-red-600 hover:bg-red-700"
+                                                                    >
+                                                                        确认删除
+                                                                    </AlertDialogAction>
+                                                                </AlertDialogFooter>
+                                                            </AlertDialogContent>
+                                                        </AlertDialog>
+                                                    </div>
                                                 </div>
                                             </CardContent>
                                         </Card>
@@ -622,9 +1064,26 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                                                             <Clock className="h-3 w-3" />
                                                             {topic.create_time}
                                                         </div>
-                                                        <div className="text-sm line-clamp-3 text-foreground/90 whitespace-pre-wrap">
-                                                            {topic.text?.length > 200 ? topic.text.slice(0, 200) + '...' : topic.text}
+                                                        <div className="text-sm text-foreground/90 whitespace-pre-wrap break-words">
+                                                            {(() => {
+                                                                const isExpanded = expandedOverviewTopics.has(String(topic.topic_id));
+                                                                const fullText = topic.text || '';
+                                                                const previewText = fullText.length > 220 ? `${fullText.slice(0, 220)}...` : fullText;
+                                                                return isExpanded ? fullText : previewText;
+                                                            })()}
                                                         </div>
+                                                        {(topic.text?.length || 0) > 220 && (
+                                                            <div className="flex justify-end">
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="ghost"
+                                                                    className="h-6 px-2 text-xs"
+                                                                    onClick={() => toggleOverviewTopicExpand(topic.topic_id)}
+                                                                >
+                                                                    {expandedOverviewTopics.has(String(topic.topic_id)) ? '收起' : '展开全部'}
+                                                                </Button>
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     {/* Stock List with Performance */}
@@ -707,23 +1166,63 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                 {/* ── WIN-RATE RANKING ── */}
                 {activeView === 'winrate' && (
                     <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">收益周期:</span>
-                            <Select value={returnPeriod} onValueChange={v => setReturnPeriod(v)}>
-                                <SelectTrigger className="w-28 h-8 text-xs">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="return_1d">T+1</SelectItem>
-                                    <SelectItem value="return_3d">T+3</SelectItem>
-                                    <SelectItem value="return_5d">T+5</SelectItem>
-                                    <SelectItem value="return_10d">T+10</SelectItem>
-                                    <SelectItem value="return_20d">T+20</SelectItem>
-                                </SelectContent>
-                            </Select>
-                            <Button size="sm" variant="ghost" onClick={loadWinRate}>
-                                <RefreshCw className="h-3.5 w-3.5" />
-                            </Button>
+                        {/* Search bar for win rate (only when no external search) */}
+                        {externalSearchTerm === undefined && (
+                            <div className="flex items-center gap-2 bg-background z-10">
+                                <div className="relative flex-1">
+                                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        placeholder="搜索股票代码或名称..."
+                                        className="pl-9 h-9"
+                                        value={searchStock}
+                                        onChange={e => { setSearchStock(e.target.value); }}
+                                    />
+                                </div>
+                                {searchStock && <span className="text-xs text-muted-foreground whitespace-nowrap">匹配 {winRate.filter((w: any) => {
+                                    const q = searchStock.toLowerCase();
+                                    return (w.stock_name || '').toLowerCase().includes(q) || (w.stock_code || '').toLowerCase().includes(q);
+                                }).length} / {winRate.length}</span>}
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2 flex-wrap justify-between">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs text-muted-foreground">收益周期:</span>
+                                <Select value={returnPeriod} onValueChange={v => { setReturnPeriod(v); setWinRatePage(1); }}>
+                                    <SelectTrigger className="w-24 h-7 text-xs">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="return_1d">T+1</SelectItem>
+                                        <SelectItem value="return_3d">T+3</SelectItem>
+                                        <SelectItem value="return_5d">T+5</SelectItem>
+                                        <SelectItem value="return_10d">T+10</SelectItem>
+                                        <SelectItem value="return_20d">T+20</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <span className="text-xs text-muted-foreground">最少提及:</span>
+                                <Select value={String(winRateMinMentions)} onValueChange={(v) => { setWinRateMinMentions(Number(v)); setWinRatePage(1); }}>
+                                    <SelectTrigger className="w-20 h-7 text-xs">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="1">1次</SelectItem>
+                                        <SelectItem value="2">2次</SelectItem>
+                                        <SelectItem value="3">3次</SelectItem>
+                                        <SelectItem value="5">5次</SelectItem>
+                                        <SelectItem value="10">10次</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <span className="text-[11px] text-muted-foreground">当前门槛会影响可见股票数量</span>
+                            </div>
+
+                            <TimeRangePicker
+                                range={winRateRange}
+                                start={winRateStart}
+                                end={winRateEnd}
+                                onRangeChange={setWinRateRange}
+                                onStartChange={setWinRateStart}
+                                onEndChange={setWinRateEnd}
+                            />
                         </div>
 
                         <div className="rounded-md border overflow-hidden">
@@ -732,26 +1231,114 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                                     <tr className="bg-muted/40 text-muted-foreground">
                                         <th className="text-left p-2 font-medium">#</th>
                                         <th className="text-left p-2 font-medium">股票</th>
-                                        <th className="text-right p-2 font-medium">提及次数</th>
-                                        <th className="text-right p-2 font-medium">胜率</th>
-                                        <th className="text-right p-2 font-medium">平均收益</th>
-                                        {/* Global API v.s. Stock API diff: avg_excess might be missing in global if simply not aggregated, but let's assume it is there or check */}
-                                        <th className="text-right p-2 font-medium">平均超额</th>
+                                        <th
+                                            className="text-right p-2 font-medium cursor-pointer hover:bg-muted/60 transition-colors select-none group"
+                                            onClick={() => {
+                                                if (winRateSortColumn === 'latest_mention') {
+                                                    setWinRateSortOrder(winRateSortOrder === 'desc' ? 'asc' : 'desc');
+                                                } else {
+                                                    setWinRateSortColumn('latest_mention');
+                                                    setWinRateSortOrder('desc');
+                                                }
+                                                setWinRatePage(1);
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-end gap-1">
+                                                <span className="border-b border-transparent group-hover:border-muted-foreground/30 border-dotted">最后提及时间</span>
+                                                <span className="text-[10px] opacity-50 w-2 flex justify-center">{winRateSortColumn === 'latest_mention' ? (winRateSortOrder === 'desc' ? '↓' : '↑') : ''}</span>
+                                            </div>
+                                        </th>
+                                        <th
+                                            className="text-right p-2 font-medium cursor-pointer hover:bg-muted/60 transition-colors select-none group"
+                                            onClick={() => {
+                                                if (winRateSortColumn === 'total_mentions') {
+                                                    setWinRateSortOrder(winRateSortOrder === 'desc' ? 'asc' : 'desc');
+                                                } else {
+                                                    setWinRateSortColumn('total_mentions');
+                                                    setWinRateSortOrder('desc');
+                                                }
+                                                setWinRatePage(1);
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-end gap-1">
+                                                <span className="border-b border-transparent group-hover:border-muted-foreground/30 border-dotted">提及次数</span>
+                                                <span className="text-[10px] opacity-50 w-2 flex justify-center">{winRateSortColumn === 'total_mentions' ? (winRateSortOrder === 'desc' ? '↓' : '↑') : ''}</span>
+                                            </div>
+                                        </th>
+                                        <th
+                                            className="text-right p-2 font-medium cursor-pointer hover:bg-muted/60 transition-colors select-none group"
+                                            onClick={() => {
+                                                if (winRateSortColumn === 'win_rate') {
+                                                    setWinRateSortOrder(winRateSortOrder === 'desc' ? 'asc' : 'desc');
+                                                } else {
+                                                    setWinRateSortColumn('win_rate');
+                                                    setWinRateSortOrder('desc');
+                                                }
+                                                setWinRatePage(1);
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-end gap-1">
+                                                <span className="border-b border-transparent group-hover:border-muted-foreground/30 border-dotted">胜率</span>
+                                                <span className="text-[10px] opacity-50 w-2 flex justify-center">{winRateSortColumn === 'win_rate' ? (winRateSortOrder === 'desc' ? '↓' : '↑') : ''}</span>
+                                            </div>
+                                        </th>
+                                        <th
+                                            className="text-right p-2 font-medium cursor-pointer hover:bg-muted/60 transition-colors select-none group"
+                                            onClick={() => {
+                                                if (winRateSortColumn === 'avg_return') {
+                                                    setWinRateSortOrder(winRateSortOrder === 'desc' ? 'asc' : 'desc');
+                                                } else {
+                                                    setWinRateSortColumn('avg_return');
+                                                    setWinRateSortOrder('desc');
+                                                }
+                                                setWinRatePage(1);
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-end gap-1">
+                                                <span>平均收益</span>
+                                                <HeaderInfo text="个股提及后在所选周期内的平均收益率" />
+                                                <span className="text-[10px] opacity-50 w-2 flex justify-center">{winRateSortColumn === 'avg_return' ? (winRateSortOrder === 'desc' ? '↓' : '↑') : ''}</span>
+                                            </div>
+                                        </th>
+                                        <th
+                                            className="text-right p-2 font-medium cursor-pointer hover:bg-muted/60 transition-colors select-none group"
+                                            onClick={() => {
+                                                if (winRateSortColumn === 'avg_benchmark_return') {
+                                                    setWinRateSortOrder(winRateSortOrder === 'desc' ? 'asc' : 'desc');
+                                                } else {
+                                                    setWinRateSortColumn('avg_benchmark_return');
+                                                    setWinRateSortOrder('desc');
+                                                }
+                                                setWinRatePage(1);
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-end gap-1">
+                                                <span>同期沪深300涨幅</span>
+                                                <HeaderInfo text="由个股收益与超额收益推导出的同期基准收益" />
+                                                <span className="text-[10px] opacity-50 w-2 flex justify-center">{winRateSortColumn === 'avg_benchmark_return' ? (winRateSortOrder === 'desc' ? '↓' : '↑') : ''}</span>
+                                            </div>
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {winRate.length === 0 ? (
-                                        <tr><td colSpan={6} className="text-center py-8 text-muted-foreground">暂无胜率数据</td></tr>
-                                    ) : winRate.map((w: any, i: number) => (
+                                        <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">暂无胜率数据</td></tr>
+                                    ) : (searchStock ? winRate.filter((w: any) => {
+                                        const q = searchStock.toLowerCase();
+                                        return (w.stock_name || '').toLowerCase().includes(q) || (w.stock_code || '').toLowerCase().includes(q);
+                                    }) : winRate).map((w: any, i: number) => (
                                         <tr
                                             key={w.stock_code}
                                             className="border-t border-border/50 hover:bg-muted/20 transition-colors cursor-pointer"
                                             onClick={() => openStockDetail(w.stock_code)}
                                         >
-                                            <td className="p-2 text-muted-foreground">{i + 1}</td>
+                                            <td className="p-2 text-muted-foreground">{(winRatePage - 1) * winRatePageSize + i + 1}</td>
                                             <td className="p-2">
                                                 <span className="font-medium">{w.stock_name}</span>
                                                 <span className="ml-1 text-muted-foreground">{w.stock_code}</span>
+                                            </td>
+                                            <td className="p-2 text-right text-muted-foreground">
+                                                {w.latest_mention ? new Date(w.latest_mention).toLocaleDateString() : '—'}
                                             </td>
                                             <td className="p-2 text-right">{w.total_mentions}</td>
                                             <td className="p-2 text-right">
@@ -765,88 +1352,162 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                                             <td className={`p-2 text-right font-mono ${pctColor(w.avg_return)}`}>
                                                 {fmtPct(w.avg_return)}
                                             </td>
-                                            <td className={`p-2 text-right font-mono ${pctColor(w.avg_excess)}`}>
-                                                {fmtPct(w.avg_excess)}
+                                            <td className={`p-2 text-right font-mono ${pctColor(w.avg_benchmark_return)}`}>
+                                                {fmtPct(w.avg_benchmark_return)}
                                             </td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
                         </div>
+
+                        {/* Win rate pagination */}
+                        {winRateTotal > winRatePageSize && (
+                            <div className="flex items-center justify-center gap-2">
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={winRatePage <= 1}
+                                    onClick={() => setWinRatePage(p => p - 1)}
+                                >
+                                    <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <span className="text-xs text-muted-foreground">
+                                    {winRatePage} / {Math.ceil(winRateTotal / winRatePageSize)} (共 {winRateTotal} 条)
+                                </span>
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={winRatePage >= Math.ceil(winRateTotal / winRatePageSize)}
+                                    onClick={() => setWinRatePage(p => p + 1)}
+                                >
+                                    <ChevronRight className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
                     </div>
                 )}
 
-                {/* ── SECTOR HEAT ── */}
+                {/* ── SECTOR HEATMAP ── */}
                 {activeView === 'sector' && (
                     <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground">板块提及热度排行</span>
-                            <Button size="sm" variant="ghost" onClick={loadSectors}>
-                                <RefreshCw className="h-3.5 w-3.5" />
-                            </Button>
+                        <div className="flex justify-between items-center">
+                            <h3 className="text-sm font-medium">板块热度</h3>
+                            <TimeRangePicker
+                                range={sectorRange}
+                                start={sectorStart}
+                                end={sectorEnd}
+                                onRangeChange={setSectorRange}
+                                onStartChange={setSectorStart}
+                                onEndChange={setSectorEnd}
+                            />
                         </div>
-                        {sectors.length === 0 ? (
-                            <div className="text-center py-8 text-muted-foreground text-xs">暂无板块数据</div>
-                        ) : (
-                            <div className="space-y-2">
-                                {sectors.map((s: any) => (
-                                    <HeatBar
-                                        key={s.sector}
-                                        label={s.sector}
-                                        value={s.total_mentions}
-                                        max={sectors[0]?.total_mentions || 1}
-                                    />
-                                ))}
-                            </div>
-                        )}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {sectors.length === 0 ? (
+                                <div className="col-span-full text-center py-8 text-muted-foreground font-mono text-xs">
+                                    暂无板块数据
+                                </div>
+                            ) : sectors.map(s => (
+                                <Card
+                                    key={s.sector}
+                                    className="hover:border-primary/50 transition-colors cursor-pointer"
+                                    onClick={() => {
+                                        setSelectedSector(s);
+                                        setSectorTopicsPage(1);
+                                        setExpandedSectorTopics(new Set());
+                                    }}
+                                >
+                                    <CardContent className="p-3">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="font-medium text-sm">{s.sector}</span>
+                                            <span className="text-xs text-muted-foreground">{s.total_mentions} 提及</span>
+                                        </div>
+                                        <HeatBar value={s.total_mentions} max={sectorMaxMentions} label="热度" />
+                                        {/* peak info */}
+                                        <div className="mt-2 text-[10px] text-muted-foreground flex justify-between">
+                                            <span>峰值: {s.peak_count} ({s.peak_date})</span>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ))}
+                        </div>
                     </div>
                 )}
 
                 {/* ── SIGNALS ── */}
                 {activeView === 'signals' && (
                     <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground">近7天信号雷达（≥2次提及 + 历史正收益）</span>
-                            <Button size="sm" variant="ghost" onClick={loadSignals}>
-                                <RefreshCw className="h-3.5 w-3.5" />
-                            </Button>
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-sm font-medium">信号雷达</h3>
+                                <span className="text-xs text-muted-foreground">最少提及:</span>
+                                <Select value={String(signalMinMentions)} onValueChange={(v) => setSignalMinMentions(Number(v))}>
+                                    <SelectTrigger className="w-20 h-7 text-xs">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="1">1次</SelectItem>
+                                        <SelectItem value="2">2次</SelectItem>
+                                        <SelectItem value="3">3次</SelectItem>
+                                        <SelectItem value="5">5次</SelectItem>
+                                        <SelectItem value="10">10次</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <TimeRangePicker
+                                range={signalRange}
+                                start={signalStart}
+                                end={signalEnd}
+                                onRangeChange={setSignalRange}
+                                onStartChange={setSignalStart}
+                                onEndChange={setSignalEnd}
+                            />
                         </div>
-                        {signals.length === 0 ? (
-                            <div className="text-center py-12 text-muted-foreground text-sm">
-                                <Zap className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                                🤷 近期无符合条件的信号
-                            </div>
-                        ) : (
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                {signals.map((sig: any) => (
-                                    <Card
-                                        key={sig.stock_code}
-                                        className="cursor-pointer hover:border-primary/40 transition-all"
-                                        onClick={() => openStockDetail(sig.stock_code)}
-                                    >
-                                        <CardContent className="p-3">
-                                            <div className="flex items-center gap-2 mb-1">
-                                                <Zap className="h-4 w-4 text-amber-400" />
-                                                <span className="font-medium text-sm">{sig.stock_name}</span>
-                                                <span className="text-xs text-muted-foreground">{sig.stock_code}</span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {signals.length === 0 ? (
+                                <div className="col-span-full text-center py-8 text-muted-foreground font-mono text-xs">
+                                    暂无信号数据
+                                </div>
+                            ) : signals.map(s => (
+                                <Card key={s.stock_code} className="hover:border-primary/50 transition-colors cursor-pointer" onClick={() => openStockDetail(s.stock_code)}>
+                                    <CardContent className="p-3 space-y-2">
+                                        <div className="flex justify-between items-start gap-3">
+                                            <div className="min-w-0 flex-1">
+                                                <div className="font-semibold text-sm leading-5 break-words">
+                                                    {s.stock_name || '—'}
+                                                </div>
+                                                <div className="mt-1">
+                                                    <span className="inline-flex text-[11px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">
+                                                        {s.stock_code}
+                                                    </span>
+                                                </div>
+                                                <div className="text-xs text-muted-foreground mt-0.5">
+                                                    最近提及: {s.latest_mention ? new Date(s.latest_mention).toLocaleDateString() : '—'}
+                                                </div>
                                             </div>
-                                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                                                <span>近期提及 <b className="text-foreground">{isGlobal ? sig.mention_count : sig.recent_mentions}</b> 次</span>
-                                                <span>历史胜率 <b className={pctColor((isGlobal ? sig.win_rate : sig.historical_win_rate) > 50 ? 1 : -1)}>
-                                                    {(isGlobal ? sig.win_rate : sig.historical_win_rate) != null ? `${(isGlobal ? sig.win_rate : sig.historical_win_rate).toFixed(0)}%` : '—'}
-                                                </b></span>
-                                                <span>均收益 <b className={pctColor(isGlobal ? sig.avg_return : sig.avg_return_5d)}>
-                                                    {fmtPct(isGlobal ? sig.avg_return : sig.avg_return_5d)}
-                                                </b></span>
+                                            <Badge
+                                                variant={s.historical_win_rate >= 60 ? 'default' : 'secondary'}
+                                                className="shrink-0 whitespace-nowrap"
+                                            >
+                                                胜率 {s.historical_win_rate ?? '—'}%
+                                            </Badge>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs bg-muted/20 p-2 rounded">
+                                            <div>
+                                                <span className="text-muted-foreground block">近期提及</span>
+                                                <span className="font-mono font-medium">{s.recent_mentions}</span>
                                             </div>
-                                            {(isGlobal ? sig.reason : sig.reason) && (
-                                                <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{isGlobal ? sig.reason : sig.reason}</p>
-                                            )}
-                                        </CardContent>
-                                    </Card>
-                                ))}
-                            </div>
-                        )}
+                                            <div className="text-right">
+                                                <span className="text-muted-foreground block">历史均收</span>
+                                                <span className={`font-mono font-medium ${pctColor(s.historical_avg_return)}`}>
+                                                    {fmtPct(s.historical_avg_return)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ))}
+                        </div>
                     </div>
                 )}
 
@@ -1167,6 +1828,256 @@ export default function StockDashboard({ groupId, mode = 'group', onTaskCreated,
                 groupId={groupId}
                 onClose={() => setSelectedStock(null)}
             />
+
+            <Sheet open={!!selectedSector} onOpenChange={(open) => {
+                if (!open) {
+                    setSelectedSector(null);
+                    setSectorTopics([]);
+                    setSectorTopicsTotal(0);
+                    setSectorTopicsPage(1);
+                    setExpandedSectorTopics(new Set());
+                }
+            }}>
+                <SheetContent side="right" className="!max-w-none w-[100vw] sm:w-[85vw] md:w-[70vw] lg:w-[60vw] xl:w-[50vw] p-0 shadow-2xl">
+                    <SheetHeader className="px-6 pt-5 pb-3 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                        <SheetTitle className="flex items-center justify-between gap-2">
+                            <span className="truncate text-base">{selectedSector?.sector || '板块详情'}</span>
+                            <div className="flex items-center gap-1.5">
+                                <Badge variant="outline" className="text-[11px]">{selectedSector?.total_mentions ?? 0} 提及</Badge>
+                                <Badge variant="secondary" className="text-[11px]">页 {sectorTopicsPage}</Badge>
+                            </div>
+                        </SheetTitle>
+                        <SheetDescription className="text-[11px] leading-relaxed">
+                            峰值 {selectedSector?.peak_count ?? 0}（{selectedSector?.peak_date || '—'}） · 时间范围 {sectorStart} ~ {sectorEnd}
+                        </SheetDescription>
+                    </SheetHeader>
+
+                    <div ref={sectorDrawerScrollRef} className="px-6 py-4 space-y-3 overflow-y-auto h-[calc(100vh-96px)]">
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                            <Card>
+                                <CardContent className="p-3">
+                                    <div className="text-[11px] text-muted-foreground">命中话题</div>
+                                    <div className="text-lg font-semibold mt-1 leading-none">{sectorTopicsTotal}</div>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-3">
+                                    <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                                        关键词
+                                        <HeaderInfo text="当前时间范围和当前页话题中命中的不重复关键词数量。" />
+                                    </div>
+                                    <div className="text-lg font-semibold mt-1 leading-none">{sectorUniqueKeywords.size}</div>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-3">
+                                    <div className="text-[11px] text-muted-foreground">峰值提及</div>
+                                    <div className="text-lg font-semibold mt-1 leading-none">{selectedSector?.peak_count ?? 0}</div>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-3">
+                                    <div className="text-[11px] text-muted-foreground">峰值日期</div>
+                                    <div className="text-sm font-semibold mt-1 truncate">{selectedSector?.peak_date || '—'}</div>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        <Card>
+                            <CardContent className="p-3 space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <div className="text-sm font-medium">时间热度（月视图）</div>
+                                    <div className="text-[11px] text-muted-foreground">按月聚合</div>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
+                                    {Object.entries(sectorMonthlyStats)
+                                        .sort((a, b) => b[0].localeCompare(a[0]))
+                                        .map(([month, stat]) => (
+                                            <div key={month} className="rounded-md border px-2.5 py-2">
+                                                <div className="flex items-center justify-between text-[11px]">
+                                                    <span className="font-medium">{month}</span>
+                                                    <span className="text-muted-foreground">峰值 {stat.peak}</span>
+                                                </div>
+                                                <div className="mt-1.5 flex items-end justify-between">
+                                                    <div className="text-base font-semibold font-mono leading-none">{stat.total}</div>
+                                                    <div className="text-[10px] text-muted-foreground">{stat.days} 天</div>
+                                                </div>
+                                                <div className="mt-1 text-[10px] text-muted-foreground">
+                                                    日均 {(stat.total / Math.max(stat.days, 1)).toFixed(1)}
+                                                </div>
+                                            </div>
+                                        ))}
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardContent className="p-3">
+                                <div className="flex items-center justify-between">
+                                    <div className="text-sm font-medium">提及话题时间线</div>
+                                    <span className="text-[11px] text-muted-foreground">共 {sectorTopicsTotal} 条（每页 {sectorTopicsPageSize} 条）</span>
+                                </div>
+                                <div className="text-[11px] text-muted-foreground mt-1">
+                                    按时间倒序，展示摘要、命中关键词、关联股票和话题标识
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        {sectorTopicsLoading ? (
+                            <div className="py-6 text-center text-xs text-muted-foreground">加载话题中...</div>
+                        ) : sectorTopicsError ? (
+                            <div className="py-6 text-center text-xs text-muted-foreground space-y-2">
+                                <div>{sectorTopicsError}</div>
+                                <Button size="sm" variant="outline" onClick={loadSectorTopics}>重试</Button>
+                            </div>
+                        ) : sectorTopics.length === 0 ? (
+                            <div className="py-6 text-center text-xs text-muted-foreground">当前筛选下暂无命中话题</div>
+                        ) : (
+                            <div className="space-y-2.5">
+                                {sectorTopics.map((topic) => {
+                                    const topicId = String(topic.topic_id);
+                                    const isExpanded = expandedSectorTopics.has(topicId);
+                                    const displayText = isExpanded ? (topic.full_text || topic.text_snippet) : topic.text_snippet;
+                                    const hasLongText = (topic.full_text?.length || topic.text_snippet.length) > topic.text_snippet.length;
+
+                                    return (
+                                        <div key={topicId} className="relative pl-5 border-l border-muted/60">
+                                            <div className="absolute -left-[4px] top-2.5 h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+                                            <Card>
+                                                <CardContent className="p-3 space-y-2">
+                                                    <div className="flex items-start justify-between gap-2">
+                                                        <div className="space-y-1 min-w-0">
+                                                            <div className="text-[11px] text-muted-foreground">
+                                                                {topic.create_time ? new Date(topic.create_time).toLocaleString('zh-CN') : '—'}
+                                                            </div>
+                                                            {topic.group_id && (
+                                                                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                    <span>群组:</span>
+                                                                    <Link
+                                                                        href={`/groups/${topic.group_id}`}
+                                                                        className="underline underline-offset-2 hover:text-primary"
+                                                                    >
+                                                                        {topic.group_name || topic.group_id}
+                                                                    </Link>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                                                                <span>关键词 {topic.matched_keywords.length}</span>
+                                                                <span>·</span>
+                                                                <span>关联股票 {topic.stocks.length}</span>
+                                                            </div>
+                                                        </div>
+                                                        <Badge variant="outline" className="text-[10px] font-mono shrink-0">
+                                                            topic {topicId}
+                                                        </Badge>
+                                                    </div>
+
+                                                    <div className="rounded-md bg-muted/35 px-2.5 py-2">
+                                                        <div className="text-xs whitespace-pre-wrap break-words leading-relaxed">
+                                                            {displayText}
+                                                        </div>
+                                                    </div>
+
+                                                    {hasLongText && (
+                                                        <div className="flex justify-end">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="ghost"
+                                                                className="h-6 px-2 text-[11px]"
+                                                                onClick={() => {
+                                                                    setExpandedSectorTopics(prev => {
+                                                                        const next = new Set(prev);
+                                                                        if (next.has(topicId)) next.delete(topicId);
+                                                                        else next.add(topicId);
+                                                                        return next;
+                                                                    });
+                                                                }}
+                                                            >
+                                                                {isExpanded ? '收起' : '展开全文'}
+                                                            </Button>
+                                                        </div>
+                                                    )}
+
+                                                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                                                        <div className="space-y-1">
+                                                            <div className="text-[10px] text-muted-foreground">命中关键词</div>
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {topic.matched_keywords.length === 0 ? (
+                                                                    <span className="text-[10px] text-muted-foreground">无</span>
+                                                                ) : topic.matched_keywords.map((kw, idx) => (
+                                                                    <Badge key={`${topicId}-kw-${idx}`} variant="secondary" className="text-[10px] px-1.5 py-0">
+                                                                        {kw}
+                                                                    </Badge>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="space-y-1">
+                                                            <div className="text-[10px] text-muted-foreground">关联股票</div>
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {topic.stocks.length === 0 ? (
+                                                                    <span className="text-[10px] text-muted-foreground">无关联股票</span>
+                                                                ) : topic.stocks.map((stock) => (
+                                                                    <Badge
+                                                                        key={`${topicId}-${stock.stock_code}`}
+                                                                        variant="outline"
+                                                                        className="text-[10px] px-1.5 py-0 cursor-pointer hover:border-primary"
+                                                                        onClick={() => openStockDetail(stock.stock_code)}
+                                                                    >
+                                                                        {stock.stock_name}
+                                                                        <span className="ml-1 opacity-60 font-mono">{stock.stock_code}</span>
+                                                                    </Badge>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex justify-end">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            className="h-6 px-2 text-[11px]"
+                                                            onClick={() => toast.info(`话题ID: ${topicId}，可在概览中按时间定位原文`)}
+                                                        >
+                                                            查看话题原文
+                                                        </Button>
+                                                    </div>
+                                                </CardContent>
+                                            </Card>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        {sectorTopicsTotal > sectorTopicsPageSize && (
+                            <div className="sticky bottom-0 bg-background/95 backdrop-blur border rounded-md px-2 py-1.5 flex items-center justify-center gap-2">
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 w-7 p-0"
+                                    disabled={sectorTopicsPage <= 1}
+                                    onClick={() => setSectorTopicsPage(p => p - 1)}
+                                >
+                                    <ChevronLeft className="h-4 w-4" />
+                                </Button>
+                                <span className="text-xs text-muted-foreground">
+                                    {sectorTopicsPage} / {Math.ceil(sectorTopicsTotal / sectorTopicsPageSize)}
+                                </span>
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 w-7 p-0"
+                                    disabled={sectorTopicsPage >= Math.ceil(sectorTopicsTotal / sectorTopicsPageSize)}
+                                    onClick={() => setSectorTopicsPage(p => p + 1)}
+                                >
+                                    <ChevronRight className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+                </SheetContent>
+            </Sheet>
         </div>
     );
 }

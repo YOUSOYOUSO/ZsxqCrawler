@@ -813,6 +813,172 @@ class ZSXQInteractiveCrawler:
             print(f"   ❌ 总错误数: {total_stats['errors']}")
         
         return total_stats
+
+    def crawl_time_range(self, start_time: Optional[str], end_time: Optional[str], max_items: int = 500, per_page: int = 20) -> Dict[str, Any]:
+        """按时间区间爬取并入库，统一供单群/全局调用。"""
+        from datetime import datetime, timedelta, timezone
+
+        def parse_user_time(s: Optional[str]) -> Optional[datetime]:
+            if not s:
+                return None
+            t = str(s).strip()
+            if not t:
+                return None
+            try:
+                # YYYY-MM-DD -> 当天00:00:00 +08:00
+                if len(t) == 10 and t[4] == '-' and t[7] == '-':
+                    dt = datetime.strptime(t, '%Y-%m-%d')
+                    return dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                # datetime-local 无秒
+                if 'T' in t and len(t) == 16:
+                    t = t + ':00'
+                if t.endswith('Z'):
+                    t = t.replace('Z', '+00:00')
+                if len(t) >= 24 and (t[-5] in ['+', '-']) and t[-3] != ':':
+                    t = t[:-2] + ':' + t[-2:]
+                dt = datetime.fromisoformat(t)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                return dt
+            except Exception:
+                return None
+
+        def parse_topic_time(s: Optional[str]) -> Optional[datetime]:
+            if not s:
+                return None
+            try:
+                raw = str(s).strip()
+                if raw.endswith('+0800'):
+                    raw = raw.replace('+0800', '+08:00')
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                return dt
+            except Exception:
+                return None
+
+        bj_tz = timezone(timedelta(hours=8))
+        now_bj = datetime.now(bj_tz)
+
+        start_dt = parse_user_time(start_time)
+        end_dt = parse_user_time(end_time)
+        if end_dt is None:
+            end_dt = now_bj
+        if start_dt is None:
+            start_dt = end_dt - timedelta(days=30)
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        safe_per_page = max(1, int(per_page or 20))
+        safe_max_items = max(1, int(max_items or 500))
+
+        self.log(f"🗓️ 时间区间采集: {start_dt.isoformat()} ~ {end_dt.isoformat()}")
+        self.log(f"⚙️ 参数: per_page={safe_per_page}, max_items={safe_max_items}")
+
+        total_stats: Dict[str, Any] = {
+            'new_topics': 0,
+            'updated_topics': 0,
+            'errors': 0,
+            'pages': 0,
+            'stopped': False,
+            'expired': False,
+        }
+
+        end_time_param = None
+        imported_items = 0
+        max_retries_per_page = 10
+
+        while True:
+            if self.is_stopped():
+                total_stats['stopped'] = True
+                self.log("🛑 时间区间采集已停止")
+                break
+
+            retry_count = 0
+            page_processed = False
+            oldest_dt_in_page = None
+
+            while retry_count < max_retries_per_page:
+                if self.is_stopped():
+                    total_stats['stopped'] = True
+                    break
+
+                data = self.fetch_topics_safe(
+                    scope="all",
+                    count=safe_per_page,
+                    end_time=end_time_param,
+                    is_historical=True if end_time_param else False
+                )
+
+                if data and isinstance(data, dict) and data.get('expired'):
+                    total_stats['expired'] = True
+                    total_stats['message'] = data.get('message', '会员已过期')
+                    self.log(f"❌ 会员已过期: {total_stats['message']}")
+                    return total_stats
+
+                if not data:
+                    retry_count += 1
+                    total_stats['errors'] += 1
+                    self.log(f"❌ 页面获取失败 (重试{retry_count}/{max_retries_per_page})")
+                    continue
+
+                topics = (data.get('resp_data', {}) or {}).get('topics', []) or []
+                if not topics:
+                    self.log("📭 无更多数据，时间区间采集结束")
+                    return total_stats
+
+                filtered_topics = []
+                for t in topics:
+                    dt = parse_topic_time(t.get('create_time'))
+                    if dt:
+                        oldest_dt_in_page = dt
+                        if start_dt <= dt <= end_dt:
+                            filtered_topics.append(t)
+
+                if filtered_topics:
+                    filtered_data = {'succeeded': True, 'resp_data': {'topics': filtered_topics}}
+                    page_stats = self.store_batch_data(filtered_data)
+                    total_stats['new_topics'] += page_stats.get('new_topics', 0)
+                    total_stats['updated_topics'] += page_stats.get('updated_topics', 0)
+                    total_stats['errors'] += page_stats.get('errors', 0)
+                    imported_items += len(filtered_topics)
+                    self.log(
+                        f"💾 区间命中 {len(filtered_topics)} 条，页面存储: 新增{page_stats.get('new_topics', 0)}, 更新{page_stats.get('updated_topics', 0)}"
+                    )
+                else:
+                    self.log("ℹ️ 当前页无命中区间的话题")
+
+                total_stats['pages'] += 1
+                page_processed = True
+
+                oldest_in_page = topics[-1].get('create_time')
+                oldest_dt = parse_topic_time(oldest_in_page)
+                if oldest_dt:
+                    adjusted = oldest_dt - timedelta(milliseconds=self.timestamp_offset_ms)
+                    end_time_param = adjusted.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0800'
+                else:
+                    end_time_param = oldest_in_page
+
+                self.check_page_long_delay()
+                break
+
+            if not page_processed:
+                self.log("🚫 当前页面达到最大重试次数，终止任务")
+                break
+
+            if imported_items >= safe_max_items:
+                self.log(f"✅ 达到 max_items={safe_max_items}，结束采集")
+                break
+
+            if oldest_dt_in_page and oldest_dt_in_page < start_dt:
+                self.log("✅ 已回溯到起始时间之前，结束采集")
+                break
+
+            if not end_time_param:
+                self.log("ℹ️ 无下一页时间游标，结束采集")
+                break
+
+        return total_stats
     
     def crawl_all_historical(self, per_page: int = 20, auto_confirm: bool = False) -> Dict[str, int]:
         """获取所有历史数据：无限爬取直到没有数据（使用增量爬取逻辑）"""

@@ -88,8 +88,8 @@ current_tasks: Dict[str, Dict[str, Any]] = {
     "scheduler": {
         "task_id": "scheduler",
         "type": "scheduler",
-        "status": "running",
-        "message": "自动调度系统",
+        "status": "stopped",
+        "message": "自动调度系统（未启动）",
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
@@ -118,6 +118,10 @@ try:
     sc = get_scheduler()
     sc.set_log_callback(scheduler_log_callback)
     sc.set_status_callback(scheduler_status_callback)
+    initial_status = sc.get_status()
+    current_tasks["scheduler"]["status"] = initial_status.get("state", "stopped")
+    current_tasks["scheduler"]["message"] = "自动调度系统"
+    current_tasks["scheduler"]["updated_at"] = datetime.now().isoformat()
 except ImportError:
     pass
 
@@ -477,6 +481,99 @@ def update_task(task_id: str, status: str, message: str, result: Optional[Dict[s
         # 添加状态变更日志
         add_task_log(task_id, f"状态更新: {message}")
 
+
+def _to_iso_datetime(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(v).isoformat()
+        except Exception:
+            return v
+    return str(value)
+
+
+def _task_sort_key(task: Dict[str, Any]) -> str:
+    return (
+        _to_iso_datetime(task.get("updated_at"))
+        or _to_iso_datetime(task.get("created_at"))
+        or ""
+    )
+
+
+def _normalize_task_snapshot(task: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **task,
+        "created_at": _to_iso_datetime(task.get("created_at")),
+        "updated_at": _to_iso_datetime(task.get("updated_at")),
+    }
+
+
+def _task_category(task_type: str) -> str:
+    t = str(task_type or "").strip()
+    if t == "scheduler":
+        return "scheduler"
+    if t.startswith("global_crawl") or t.startswith("crawl_"):
+        return "crawl"
+    if t.startswith("global_files_collect") or t.startswith("global_files_download"):
+        return "files"
+    if t.startswith("global_analyze_performance") or t.startswith("stock_scan_"):
+        return "analyze"
+    return "other"
+
+
+def _build_task_summary() -> Dict[str, Any]:
+    running_status = {"pending", "running", "stopping"}
+    terminal_status = {"completed", "failed", "cancelled", "stopped", "idle"}
+
+    running_by_type: Dict[str, Dict[str, Any]] = {}
+    latest_by_type: Dict[str, Dict[str, Any]] = {}
+    running_by_task_type: Dict[str, Dict[str, Any]] = {}
+    latest_by_task_type: Dict[str, Dict[str, Any]] = {}
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {"crawl": [], "files": [], "analyze": [], "scheduler": [], "other": []}
+    for raw_task in current_tasks.values():
+        task = _normalize_task_snapshot(raw_task)
+        task_type = str(task.get("type", ""))
+        grouped[_task_category(str(task.get("type", "")))].append(task)
+        if task_type:
+            prev_running = running_by_task_type.get(task_type)
+            if str(task.get("status", "")) in running_status and (prev_running is None or _task_sort_key(task) > _task_sort_key(prev_running)):
+                running_by_task_type[task_type] = task
+            prev_latest = latest_by_task_type.get(task_type)
+            if prev_latest is None or _task_sort_key(task) > _task_sort_key(prev_latest):
+                latest_by_task_type[task_type] = task
+
+    for category, items in grouped.items():
+        if not items:
+            continue
+        items_sorted = sorted(items, key=_task_sort_key, reverse=True)
+        running_items = [t for t in items_sorted if str(t.get("status", "")) in running_status]
+        if running_items:
+            running_by_type[category] = running_items[0]
+
+        terminal_items = [t for t in items_sorted if str(t.get("status", "")) in terminal_status]
+        latest_by_type[category] = terminal_items[0] if terminal_items else items_sorted[0]
+
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler_snapshot = get_scheduler().get_status()
+    except Exception:
+        scheduler_snapshot = {}
+
+    return {
+        "running_by_type": running_by_type,
+        "latest_by_type": latest_by_type,
+        "running_by_task_type": running_by_task_type,
+        "latest_by_task_type": latest_by_task_type,
+        "scheduler": scheduler_snapshot,
+    }
+
 def stop_task(task_id: str) -> bool:
     """停止任务"""
     if task_id not in current_tasks:
@@ -505,6 +602,7 @@ def stop_task(task_id: str) -> bool:
     if task_id == "scheduler":
         try:
             from auto_scheduler import get_scheduler
+            update_task(task_id, "stopping", "调度器停止请求已发送，正在收尾...")
             # 使用 create_task 异步停止，避免阻塞 API
             asyncio.create_task(get_scheduler().stop())
             return True
@@ -598,6 +696,16 @@ async def root():
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "timestamp": datetime.now()}
+
+@app.get("/api/meta/features")
+async def get_meta_features():
+    """前端能力探测，避免版本不一致导致的404/字段缺失。"""
+    return {
+        "global_sector_topics": True,
+        "scheduler_v2_status": True,
+        "scheduler_next_runs": True,
+        "global_scan_filter": True,
+    }
 
 @app.get("/api/config")
 async def get_config():
@@ -1006,6 +1114,11 @@ async def get_database_stats():
 async def get_tasks():
     """获取所有任务状态"""
     return list(current_tasks.values())
+
+@app.get("/api/tasks/summary")
+async def get_tasks_summary():
+    """按业务类别返回运行中 + 最近一次任务快照，用于 Dashboard 恢复状态。"""
+    return _build_task_summary()
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str):
@@ -2120,12 +2233,38 @@ async def clear_file_database(group_id: str):
 async def clear_topic_database(group_id: str):
     """删除指定群组的话题数据库文件"""
     try:
+        import sqlite3
         path_manager = get_db_path_manager()
         db_path = path_manager.get_topics_db_path(group_id)
+        delete_stats = {
+            "topics_deleted": 0,
+            "mentions_deleted": 0,
+            "performances_deleted": 0,
+            "cache_invalidated": False,
+        }
 
         print(f"🗑️ 尝试删除话题数据库: {db_path}")
 
         if os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path, timeout=10)
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM topics")
+                delete_stats["topics_deleted"] = int((cur.fetchone() or [0])[0] or 0)
+                try:
+                    cur.execute("SELECT COUNT(*) FROM stock_mentions")
+                    delete_stats["mentions_deleted"] = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    pass
+                try:
+                    cur.execute("SELECT COUNT(*) FROM mention_performance")
+                    delete_stats["performances_deleted"] = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    pass
+                conn.close()
+            except Exception as se:
+                print(f"⚠️ 删除前统计失败: {se}")
+
             # 强制关闭所有可能的数据库连接
             import gc
             import time
@@ -2168,13 +2307,30 @@ async def clear_topic_database(group_id: str):
                 except Exception as cache_error:
                     print(f"⚠️ 清空图片缓存时出错: {cache_error}")
 
-                return {"message": f"群组 {group_id} 的话题数据库和图片缓存已删除"}
+                # 清理全局聚合缓存，避免 dashboard 统计延迟
+                try:
+                    from global_analyzer import get_global_analyzer
+                    get_global_analyzer().invalidate_cache()
+                    print("✅ 全局分析缓存已失效")
+                    delete_stats["cache_invalidated"] = True
+                except Exception as ge:
+                    print(f"⚠️ 清理全局缓存失败: {ge}")
+
+                return {
+                    "message": f"群组 {group_id} 的话题数据库和图片缓存已删除",
+                    "group_id": group_id,
+                    "deleted": delete_stats,
+                }
             except PermissionError as pe:
                 print(f"❌ 文件被占用，无法删除: {pe}")
                 raise HTTPException(status_code=500, detail=f"文件被占用，无法删除数据库文件。请稍后重试。")
         else:
             print(f"ℹ️ 话题数据库不存在: {db_path}")
-            return {"message": f"群组 {group_id} 的话题数据库不存在"}
+            return {
+                "message": f"群组 {group_id} 的话题数据库不存在",
+                "group_id": group_id,
+                "deleted": delete_stats,
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -2222,7 +2378,7 @@ async def get_topics(page: int = 1, per_page: int = 20, search: Optional[str] = 
         return {
             "topics": [
                 {
-                    "topic_id": topic[0],
+                    "topic_id": str(topic[0]) if topic[0] is not None else None,
                     "title": topic[1],
                     "create_time": topic[2],
                     "likes_count": topic[3],
@@ -2309,6 +2465,11 @@ async def refresh_local_groups():
     """
     try:
         ids = await asyncio.to_thread(scan_local_groups)
+        try:
+            from global_analyzer import get_global_analyzer
+            get_global_analyzer().invalidate_cache()
+        except Exception:
+            pass
         return {"success": True, "count": len(ids), "groups": sorted(list(ids))}
     except Exception as e:
         cached = get_cached_local_group_ids(force_refresh=False) or set()
@@ -2789,7 +2950,7 @@ async def fetch_single_topic(group_id: str, topic_id: int, fetch_comments: bool 
 
         return {
             "success": True,
-            "topic_id": topic_id,
+            "topic_id": str(topic_id) if topic_id is not None else None,
             "group_id": int(group_id),
             "imported": "updated" if existed else "created",
             "comments_fetched": comments_fetched
@@ -3455,7 +3616,7 @@ async def stream_task_logs(task_id: str):
                         last_status = status
                         last_message = message
 
-                    if status in ['completed', 'failed', 'cancelled']:
+                    if status in ['completed', 'failed', 'cancelled', 'stopped', 'idle']:
                         break
 
                 # 发送心跳
@@ -3764,7 +3925,7 @@ class CrawlTimeRangeRequest(BaseModel):
 
 
 def run_crawl_time_range_task(task_id: str, group_id: str, request: "CrawlTimeRangeRequest"):
-    """后台执行“按时间区间爬取”任务：仅导入位于区间 [startTime, endTime] 内的话题"""
+    """后台执行“按时间区间爬取”任务（统一复用 crawler.crawl_time_range）。"""
     try:
         from datetime import datetime, timedelta, timezone
 
@@ -3839,102 +4000,21 @@ def run_crawl_time_range_task(task_id: str, group_id: str, request: "CrawlTimeRa
         crawler.set_custom_intervals(**effective_intervals)
 
         per_page = request.perPage or 20
-        total_stats = {'new_topics': 0, 'updated_topics': 0, 'errors': 0, 'pages': 0}
-        end_time_param = None  # 从最新开始
-        max_retries_per_page = 10
+        total_stats = crawler.crawl_time_range(
+            start_time=start_dt.isoformat(),
+            end_time=end_dt.isoformat(),
+            max_items=500,
+            per_page=per_page,
+        ) or {}
 
-        while True:
-            if is_task_stopped(task_id):
-                add_task_log(task_id, "🛑 任务已停止")
-                break
+        if total_stats.get('expired'):
+            msg = str(total_stats.get('message') or '会员已过期')
+            update_task(task_id, "failed", msg, total_stats)
+            return
 
-            retry = 0
-            page_processed = False
-            last_time_dt_in_page = None
-
-            while retry < max_retries_per_page:
-                if is_task_stopped(task_id):
-                    break
-
-                data = crawler.fetch_topics_safe(
-                    scope="all",
-                    count=per_page,
-                    end_time=end_time_param,
-                    is_historical=True if end_time_param else False
-                )
-
-                # 会员过期
-                if data and isinstance(data, dict) and data.get('expired'):
-                    add_task_log(task_id, f"❌ 会员已过期: {data.get('message')}")
-                    update_task(task_id, "failed", "会员已过期", data)
-                    return
-
-                if not data:
-                    retry += 1
-                    total_stats['errors'] += 1
-                    add_task_log(task_id, f"❌ 页面获取失败 (重试{retry}/{max_retries_per_page})")
-                    continue
-
-                topics = (data.get('resp_data', {}) or {}).get('topics', []) or []
-                if not topics:
-                    add_task_log(task_id, "📭 无更多数据，任务结束")
-                    page_processed = True
-                    break
-
-                # 过滤时间范围
-                from datetime import datetime
-                filtered = []
-                for t in topics:
-                    ts = t.get('create_time')
-                    dt = None
-                    try:
-                        if ts:
-                            ts_fixed = ts.replace('+0800', '+08:00') if ts.endswith('+0800') else ts
-                            dt = datetime.fromisoformat(ts_fixed)
-                    except Exception:
-                        dt = None
-
-                    if dt:
-                        last_time_dt_in_page = dt  # 该页数据按时间降序；循环结束后持有最后（最老）时间
-                        if start_dt <= dt <= end_dt:
-                            filtered.append(t)
-
-                # 仅导入时间范围内的数据
-                if filtered:
-                    filtered_data = {'succeeded': True, 'resp_data': {'topics': filtered}}
-                    page_stats = crawler.store_batch_data(filtered_data)
-                    total_stats['new_topics'] += page_stats.get('new_topics', 0)
-                    total_stats['updated_topics'] += page_stats.get('updated_topics', 0)
-                    total_stats['errors'] += page_stats.get('errors', 0)
-
-                total_stats['pages'] += 1
-                page_processed = True
-
-                # 计算下一页的 end_time（使用该页最老话题时间 - 偏移毫秒）
-                oldest_in_page = topics[-1].get('create_time')
-                try:
-                    dt_oldest = datetime.fromisoformat(oldest_in_page.replace('+0800', '+08:00'))
-                    dt_oldest = dt_oldest - timedelta(milliseconds=crawler.timestamp_offset_ms)
-                    end_time_param = dt_oldest.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0800'
-                except Exception:
-                    end_time_param = oldest_in_page
-
-                # 若该页最老时间已早于 start_dt，则后续更老数据均不在范围内，结束
-                if last_time_dt_in_page and last_time_dt_in_page < start_dt:
-                    add_task_log(task_id, "✅ 已到达起始时间之前，任务结束")
-                    break
-
-                # 成功处理后进行长休眠检查
-                crawler.check_page_long_delay()
-                break  # 成功后跳出重试循环
-
-            if not page_processed:
-                add_task_log(task_id, "🚫 当前页面达到最大重试次数，终止任务")
-                break
-
-            # 结束条件：没有下一页时间或已越过起始边界
-            if not end_time_param or (last_time_dt_in_page and last_time_dt_in_page < start_dt):
-                break
+        if total_stats.get('stopped') or is_task_stopped(task_id):
+            update_task(task_id, "cancelled", "时间区间爬取已停止", total_stats)
+            return
 
         update_task(task_id, "completed", "时间区间爬取完成", total_stats)
     except Exception as e:
@@ -5225,34 +5305,68 @@ def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90
 
 @app.get("/api/groups/{group_id}/stock/win-rate")
 def get_stock_win_rate(group_id: str, min_mentions: int = 2,
-                              return_period: str = 'return_5d', limit: int = 50):
-    """胜率排行榜：按提及后N日正收益率排序"""
+                       return_period: str = 'return_5d', limit: int = 50,
+                       start_date: Optional[str] = None, end_date: Optional[str] = None,
+                       page: int = 1, page_size: int = 20,
+                       sort_by: str = 'win_rate', order: str = 'desc'):
+    """胜率排行榜：按提及后N日正收益率排序（支持 min_mentions / 时间区间 / 排序）"""
     try:
+        min_mentions = max(1, min_mentions)
         analyzer = StockAnalyzer(group_id)
         return analyzer.get_win_rate_ranking(min_mentions=min_mentions,
-                                              return_period=return_period, limit=limit)
+                                              return_period=return_period, limit=limit,
+                                              start_date=start_date, end_date=end_date,
+                                              page=page, page_size=page_size,
+                                              sort_by=sort_by, order=order)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取胜率排行失败: {str(e)}")
 
 
 @app.get("/api/groups/{group_id}/stock/sector-heat")
-def get_sector_heatmap(group_id: str):
+def get_sector_heatmap(group_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
     """板块热度分析"""
     try:
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_sector_heatmap()
+        return analyzer.get_sector_heatmap(start_date=start_date, end_date=end_date)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取板块热度失败: {str(e)}")
 
 
 @app.get("/api/groups/{group_id}/stock/signals")
-def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2):
-    """信号雷达：近期高频提及 + 历史胜率高的股票"""
+def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2,
+                      start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """信号雷达：近期高频提及 + 历史胜率高的股票（支持 min_mentions / 时间区间）"""
     try:
+        min_mentions = max(1, min_mentions)
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_signals(lookback_days=lookback_days, min_mentions=min_mentions)
+        return analyzer.get_signals(
+            lookback_days=lookback_days,
+            min_mentions=min_mentions,
+            start_date=start_date,
+            end_date=end_date
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取信号雷达失败: {str(e)}")
+
+
+@app.get("/api/groups/{group_id}/stock/sector-topics")
+def get_sector_topics(group_id: str, sector: str,
+                      start_date: Optional[str] = None, end_date: Optional[str] = None,
+                      page: int = 1, page_size: int = 20):
+    """板块话题明细（按时间倒序）"""
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.get_sector_topics(
+            sector=sector,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            page_size=page_size
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取板块话题失败: {str(e)}")
 
 
 @app.get("/api/groups/{group_id}/stock/stats")
@@ -5378,6 +5492,595 @@ async def ai_history_detail(group_id: str, summary_id: int):
 
 # ========== 全局看板 API ==========
 
+class GlobalCrawlRequest(BaseModel):
+    mode: str = "latest"  # 'latest', 'all', 'incremental', 'range'
+    pages: Optional[int] = 100
+    per_page: Optional[int] = 20
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    max_items: Optional[int] = 500
+    last_days: Optional[int] = None
+    # 可选的间隔参数（覆盖默认值）
+    crawl_interval_min: Optional[float] = None
+    crawl_interval_max: Optional[float] = None
+    long_sleep_interval_min: Optional[float] = None
+    long_sleep_interval_max: Optional[float] = None
+    pages_per_batch: Optional[int] = None
+
+
+def _parse_global_crawl_time(raw: Optional[str], field_name: str) -> Optional[datetime]:
+    """解析并校验全区 range 模式时间参数。"""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        # 兼容 datetime-local（无秒）
+        if "T" in text and len(text) == 16:
+            text = text + ":00"
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        if len(text) >= 24 and text[-5] in ["+", "-"] and text[-3] != ":":
+            text = text[:-2] + ":" + text[-2:]
+        dt = datetime.fromisoformat(text)
+        return dt
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} 格式无效，请使用 ISO8601（例如 2026-02-21T10:00:00+08:00）",
+        )
+
+class GlobalFileCollectRequest(BaseModel):
+    pass
+
+class GlobalFileDownloadRequest(BaseModel):
+    max_files: int = 50
+    sort_by: str = 'create_time'
+    download_interval: float = 30.0
+    long_sleep_interval: float = 60.0
+    files_per_batch: int = 10
+    download_interval_min: Optional[float] = None
+    download_interval_max: Optional[float] = None
+    long_sleep_interval_min: Optional[float] = None
+    long_sleep_interval_max: Optional[float] = None
+
+
+def _apply_group_scan_filter_for_tasks(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """统一应用白黑名单过滤，供全区任务与调度复用。"""
+    from group_scan_filter import filter_groups
+
+    filtered = filter_groups(groups)
+    cfg = filtered.get("config", {}) or {}
+    return {
+        "all_groups": groups,
+        "included_groups": filtered.get("included_groups", []) or [],
+        "excluded_groups": filtered.get("excluded_groups", []) or [],
+        "reason_counts": filtered.get("reason_counts", {}) or {},
+        "default_action": str(cfg.get("default_action", "include")),
+    }
+
+@app.post("/api/global/crawl")
+def api_global_crawl(request: GlobalCrawlRequest, background_tasks: BackgroundTasks):
+    """全区话题采集（轮询所有群组）"""
+    if request.mode == "range":
+        has_last_days = request.last_days is not None
+        has_time_range = bool((request.start_time or "").strip() or (request.end_time or "").strip())
+        if has_last_days and int(request.last_days) < 1:
+            raise HTTPException(status_code=422, detail="last_days 必须大于 0")
+        if has_last_days and has_time_range:
+            raise HTTPException(
+                status_code=422,
+                detail="range 模式下，“最近天数(last_days)”与“开始/结束时间(start_time/end_time)”必须二选一",
+            )
+        if request.start_time:
+            _parse_global_crawl_time(request.start_time, "start_time")
+        if request.end_time:
+            _parse_global_crawl_time(request.end_time, "end_time")
+
+    global task_counter
+    task_counter += 1
+    task_id = f"global_crawl_{task_counter}"
+    
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_crawl",
+        "status": "running",
+        "message": "正在初始化全区话题采集...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _global_crawl_task(task_id: str):
+        try:
+            update_task(task_id, "running", "准备开始全区采集...")
+            add_task_log(task_id, f"🚀 开始全区话题采集 [模式: {request.mode}]")
+            
+            from db_path_manager import get_db_path_manager
+            manager = get_db_path_manager()
+            all_groups = manager.list_all_groups()
+            filtered = _apply_group_scan_filter_for_tasks(all_groups)
+            groups = filtered["included_groups"]
+            excluded_groups = filtered["excluded_groups"]
+            reason_counts = filtered["reason_counts"]
+            default_action = filtered["default_action"]
+
+            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
+            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
+            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
+            if reason_counts:
+                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
+            if excluded_groups:
+                preview = "，".join(
+                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
+                    for g in excluded_groups[:20]
+                )
+                suffix = " ..." if len(excluded_groups) > 20 else ""
+                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
+
+            if not groups:
+                update_task(task_id, "completed", "全区采集完成: 过滤后无可扫描群组")
+                return
+
+            processed_groups = 0
+            
+            for i, group in enumerate(groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 任务已被用户停止")
+                    break
+                
+                group_id = str(group['group_id'])
+                add_task_log(task_id, "")
+                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在采集群组 {group_id}...")
+                
+                try:
+                    cookie = get_cookie_for_group(group_id)
+                    db_path = manager.get_topics_db_path(group_id)
+                    
+                    def log_callback(msg):
+                        add_task_log(task_id, f"   {msg}")
+                    
+                    crawler = ZSXQInteractiveCrawler(cookie, group_id, db_path, log_callback)
+                    crawler.stop_check_func = lambda: is_task_stopped(task_id)
+                    
+                    # 设置自定义间隔参数
+                    crawler.set_custom_intervals(
+                        crawl_interval_min=request.crawl_interval_min,
+                        crawl_interval_max=request.crawl_interval_max,
+                        long_sleep_interval_min=request.long_sleep_interval_min,
+                        long_sleep_interval_max=request.long_sleep_interval_max,
+                        pages_per_batch=request.pages_per_batch,
+                    )
+                    
+                    if request.mode == 'latest':
+                        res = crawler.crawl_latest_until_complete()
+                    elif request.mode == 'incremental':
+                        res = crawler.crawl_incremental(pages=request.pages or 100, per_page=request.per_page or 20)
+                    elif request.mode == 'range':
+                        if request.last_days is not None:
+                            add_task_log(task_id, f"🧭 range 条件: 最近天数 = {request.last_days}")
+                        else:
+                            add_task_log(
+                                task_id,
+                                f"🧭 range 条件: 开始={request.start_time or '自动推导'}，结束={request.end_time or '当前时间'}",
+                            )
+                        # 处理 last_days -> start_time 转换
+                        range_start_time = request.start_time
+                        range_end_time = request.end_time
+                        if request.last_days and not range_start_time:
+                            from datetime import timezone, timedelta
+                            now_bj = datetime.now(timezone(timedelta(hours=8)))
+                            range_start_time = (now_bj - timedelta(days=max(1, request.last_days))).isoformat()
+                        safe_max_items = max(1, int(request.max_items or 500))
+                        res = crawler.crawl_time_range(
+                            start_time=range_start_time,
+                            end_time=range_end_time,
+                            max_items=safe_max_items,
+                            per_page=request.per_page or 20,
+                        )
+                    elif request.mode == 'all':
+                        res = crawler.crawl_all_historical(per_page=request.per_page or 20, auto_confirm=True)
+                    else:
+                        add_task_log(task_id, f"   ⚠️ 未知的采集模式: {request.mode}")
+                        continue
+
+                    if not isinstance(res, dict):
+                        res = {'new_topics': 0, 'updated_topics': 0, 'errors': 1}
+
+                    if res.get('expired'):
+                        add_task_log(task_id, f"   ❌ 群组 {group_id} 会员已过期: {res.get('message')}")
+                    elif res.get('stopped'):
+                        add_task_log(task_id, f"   🛑 群组 {group_id} 采集已停止")
+                    else:
+                        add_task_log(task_id, f"   ✅ 群组 {group_id} 采集完成! 新增: {res.get('new_topics', 0)}, 更新: {res.get('updated_topics', 0)}")
+                        processed_groups += 1
+                        
+                except Exception as ge:
+                    add_task_log(task_id, f"   ❌ 群组 {group_id} 采集异常: {ge}")
+                
+                # pause between groups
+                if i < len(groups) and not is_task_stopped(task_id):
+                    sleep_time = random.uniform(2.0, 5.0)
+                    add_task_log(task_id, f"⏳ 等待 {sleep_time:.1f} 秒后采集下一个群组...")
+                    time.sleep(sleep_time)
+
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "全区采集已停止")
+            else:
+                add_task_log(task_id, "")
+                add_task_log(task_id, "=" * 50)
+                add_task_log(task_id, f"🎉 全区采集完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                update_task(task_id, "completed", f"全区采集完成: {processed_groups} 个群组")
+
+        except Exception as e:
+            add_task_log(task_id, f"❌ 全区采集异常: {e}")
+            update_task(task_id, "failed", f"全区采集失败: {e}")
+
+    background_tasks.add_task(_global_crawl_task, task_id)
+    return {"task_id": task_id, "message": "全区采集任务已启动"}
+
+@app.post("/api/global/files/collect")
+def api_global_files_collect(request: GlobalFileCollectRequest, background_tasks: BackgroundTasks):
+    """全区文件列表收集"""
+    global task_counter
+    task_counter += 1
+    task_id = f"global_files_collect_{task_counter}"
+    
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_files_collect",
+        "status": "running",
+        "message": "正在初始化全区文件列表收集...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _global_collect_task(task_id: str):
+        try:
+            update_task(task_id, "running", "准备开始全区文件收集...")
+            add_task_log(task_id, f"🚀 开始全区文件列表收集")
+            
+            from db_path_manager import get_db_path_manager
+            from zsxq_file_downloader import ZSXQFileDownloader
+            
+            manager = get_db_path_manager()
+            all_groups = manager.list_all_groups()
+            filtered = _apply_group_scan_filter_for_tasks(all_groups)
+            groups = filtered["included_groups"]
+            excluded_groups = filtered["excluded_groups"]
+            reason_counts = filtered["reason_counts"]
+            default_action = filtered["default_action"]
+
+            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
+            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
+            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
+            if reason_counts:
+                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
+            if excluded_groups:
+                preview = "，".join(
+                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
+                    for g in excluded_groups[:20]
+                )
+                suffix = " ..." if len(excluded_groups) > 20 else ""
+                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
+
+            if not groups:
+                update_task(task_id, "completed", "全区收集完成: 过滤后无可扫描群组")
+                return
+
+            processed_groups = 0
+            
+            for i, group in enumerate(groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 任务已被用户停止")
+                    break
+                
+                group_id = str(group['group_id'])
+                add_task_log(task_id, "")
+                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在收集群组 {group_id} 的文件列表...")
+                
+                try:
+                    cookie = get_cookie_for_group(group_id)
+                    db_path = manager.get_files_db_path(group_id)
+                    
+                    downloader = ZSXQFileDownloader(cookie, group_id, db_path)
+                    downloader.log_callback = lambda msg: add_task_log(task_id, f"   {msg}")
+                    downloader.stop_check_func = lambda: is_task_stopped(task_id)
+                    
+                    global file_downloader_instances
+                    file_downloader_instances[task_id] = downloader
+                    
+                    res = downloader.collect_incremental_files()
+                    
+                    add_task_log(task_id, f"   ✅ 群组 {group_id} 文件收集完成! 新增待下载: {res.get('new_files',0) if isinstance(res, dict) else res}")
+                    processed_groups += 1
+                        
+                except Exception as ge:
+                    add_task_log(task_id, f"   ❌ 群组 {group_id} 收集异常: {ge}")
+                finally:
+                    if task_id in file_downloader_instances:
+                        del file_downloader_instances[task_id]
+                
+                if i < len(groups) and not is_task_stopped(task_id):
+                    sleep_time = random.uniform(1.0, 3.0)
+                    add_task_log(task_id, f"⏳ 等待 {sleep_time:.1f} 秒...")
+                    time.sleep(sleep_time)
+
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "全区收集已停止")
+            else:
+                add_task_log(task_id, "")
+                add_task_log(task_id, "=" * 50)
+                add_task_log(task_id, f"🎉 全区文件列表收集完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                update_task(task_id, "completed", f"全区收集完成: {processed_groups} 个群组")
+
+        except Exception as e:
+            add_task_log(task_id, f"❌ 全区收集异常: {e}")
+            update_task(task_id, "failed", f"全区收集失败: {e}")
+
+    background_tasks.add_task(_global_collect_task, task_id)
+    return {"task_id": task_id, "message": "全区收集任务已启动"}
+
+@app.post("/api/global/files/download")
+def api_global_files_download(request: GlobalFileDownloadRequest, background_tasks: BackgroundTasks):
+    """全区文件下载"""
+    # 我们可以复用 run_file_download_task_logic
+    global task_counter
+    task_counter += 1
+    task_id = f"global_files_download_{task_counter}"
+    
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_files_download",
+        "status": "running",
+        "message": "正在初始化全区文件下载...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _global_download_task(task_id: str):
+        try:
+            update_task(task_id, "running", "准备开始全区下载...")
+            add_task_log(task_id, f"🚀 开始全区文件下载")
+            
+            from db_path_manager import get_db_path_manager
+            manager = get_db_path_manager()
+            all_groups = manager.list_all_groups()
+            filtered = _apply_group_scan_filter_for_tasks(all_groups)
+            groups = filtered["included_groups"]
+            excluded_groups = filtered["excluded_groups"]
+            reason_counts = filtered["reason_counts"]
+            default_action = filtered["default_action"]
+
+            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
+            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
+            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
+            if reason_counts:
+                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
+            if excluded_groups:
+                preview = "，".join(
+                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
+                    for g in excluded_groups[:20]
+                )
+                suffix = " ..." if len(excluded_groups) > 20 else ""
+                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
+
+            if not groups:
+                update_task(task_id, "completed", "全区下载完成: 过滤后无可扫描群组")
+                return
+
+            processed_groups = 0
+            
+            for i, group in enumerate(groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 任务已被用户停止")
+                    break
+                
+                group_id = str(group['group_id'])
+                add_task_log(task_id, "")
+                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在下载群组 {group_id} 的文件...")
+                
+                try:
+                    from zsxq_file_downloader import ZSXQFileDownloader
+                    cookie = get_cookie_for_group(group_id)
+                    db_path = manager.get_files_db_path(group_id)
+                    
+                    downloader = ZSXQFileDownloader(
+                        cookie=cookie,
+                        group_id=group_id,
+                        db_path=db_path,
+                        download_interval=request.download_interval,
+                        long_sleep_interval=request.long_sleep_interval,
+                        files_per_batch=request.files_per_batch,
+                        download_interval_min=request.download_interval_min,
+                        download_interval_max=request.download_interval_max,
+                        long_sleep_interval_min=request.long_sleep_interval_min,
+                        long_sleep_interval_max=request.long_sleep_interval_max
+                    )
+                    downloader.log_callback = lambda msg: add_task_log(task_id, f"   {msg}")
+                    downloader.stop_check_func = lambda: is_task_stopped(task_id)
+                    
+                    global file_downloader_instances
+                    file_downloader_instances[task_id] = downloader
+                    
+                    res = downloader.download_files(request.max_files, sort_by=request.sort_by)
+                    
+                    dl_success = res.get('downloaded', 0) if isinstance(res, dict) else res
+                    add_task_log(task_id, f"   ✅ 群组 {group_id} 下载完成! 成功: {dl_success}")
+                    processed_groups += 1
+                except Exception as ge:
+                    add_task_log(task_id, f"   ❌ 群组 {group_id} 下载异常: {ge}")
+                finally:
+                    if task_id in file_downloader_instances:
+                        del file_downloader_instances[task_id]
+                
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "全区下载已停止")
+            else:
+                add_task_log(task_id, "")
+                add_task_log(task_id, "=" * 50)
+                add_task_log(task_id, f"🎉 全区文件下载完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                update_task(task_id, "completed", f"全区下载完成: {processed_groups} 个群组")
+
+        except Exception as e:
+            add_task_log(task_id, f"❌ 全区下载异常: {e}")
+            update_task(task_id, "failed", f"全区下载失败: {e}")
+
+    background_tasks.add_task(_global_download_task, task_id)
+    return {"task_id": task_id, "message": "全区下载任务已启动"}
+
+@app.post("/api/global/analyze/performance")
+def api_global_analyze_performance(background_tasks: BackgroundTasks, force: bool = False):
+    """全区收益刷新"""
+    global task_counter
+    task_counter += 1
+    task_id = f"global_analyze_performance_{task_counter}"
+    
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_analyze",
+        "status": "running",
+        "message": "正在初始化全区收益计算...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _global_analyze_task(task_id: str):
+        try:
+            update_task(task_id, "running", "准备开始全区收益计算...")
+            add_task_log(task_id, f"🚀 开始全区提及收益刷新")
+            
+            from db_path_manager import get_db_path_manager
+            from stock_analyzer import StockAnalyzer
+            
+            manager = get_db_path_manager()
+            all_groups = manager.list_all_groups()
+            filtered = _apply_group_scan_filter_for_tasks(all_groups)
+            groups = filtered["included_groups"]
+            excluded_groups = filtered["excluded_groups"]
+            reason_counts = filtered["reason_counts"]
+            default_action = filtered["default_action"]
+
+            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
+            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
+            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
+            if reason_counts:
+                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
+            if excluded_groups:
+                preview = "，".join(
+                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
+                    for g in excluded_groups[:20]
+                )
+                suffix = " ..." if len(excluded_groups) > 20 else ""
+                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
+
+            if not groups:
+                update_task(task_id, "completed", "全区收益计算完成: 过滤后无可扫描群组")
+                return
+
+            processed_groups = 0
+            groups_with_auto_extract = 0
+            mentions_extracted_total = 0
+            performance_processed_total = 0
+            
+            for i, group in enumerate(groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 任务已被用户停止")
+                    break
+                
+                group_id = str(group['group_id'])
+                add_task_log(task_id, "")
+                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在计算群 {group_id} 的收益...")
+                
+                try:
+                    analyzer = StockAnalyzer(group_id)
+                    backlog = analyzer._get_analysis_backlog_stats(calc_window_days=365)
+                    add_task_log(
+                        task_id,
+                        f"   🧩 预检查: mentions={backlog.get('mentions_total', 0)}, pending={backlog.get('pending_total', 0)}"
+                    )
+                    if backlog.get('needs_extract'):
+                        extract_res = analyzer.extract_only()
+                        groups_with_auto_extract += 1
+                        extracted_mentions = int(extract_res.get('mentions_extracted', 0) or 0)
+                        mentions_extracted_total += extracted_mentions
+                        add_task_log(
+                            task_id,
+                            f"   📝 自动提取: new_topics={extract_res.get('new_topics', 0)}, mentions={extracted_mentions}, unique_stocks={extract_res.get('unique_stocks', 0)}"
+                        )
+                    
+                    last_log_time = 0
+                    def progress_cb(current, total, status):
+                        nonlocal last_log_time
+                        now = time.time()
+                        # 避免日志过多，只在任务启动或一定时间后打印
+                        if now - last_log_time >= 5 or current == total or current == 1:
+                            add_task_log(task_id, f"   ⏳ 进度: {current}/{total} - {status}")
+                            last_log_time = now
+                    
+                    res = analyzer.calc_pending_performance(
+                        calc_window_days=365,
+                        progress_callback=progress_cb
+                    )
+                    processed_count = int(res.get('processed', 0) or 0)
+                    skipped_count = int(res.get('skipped', 0) or 0)
+                    error_count = int(res.get('errors', 0) or 0)
+                    performance_processed_total += processed_count
+                    add_task_log(
+                        task_id,
+                        f"   ✅ 群组 {group_id} 收益计算完成! processed={processed_count}, skipped={skipped_count}, errors={error_count}"
+                    )
+                    processed_groups += 1
+                except Exception as ge:
+                    add_task_log(task_id, f"   ❌ 群组 {group_id} 计算异常: {ge}")
+                
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "全区计算已停止")
+            else:
+                add_task_log(task_id, "")
+                add_task_log(task_id, "=" * 50)
+                add_task_log(task_id, f"🎉 全区收益计算完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                add_task_log(task_id, f"📊 自动提取群组: {groups_with_auto_extract}, 自动提取提及: {mentions_extracted_total}, 收益处理条数: {performance_processed_total}")
+                
+                try:
+                    from global_analyzer import get_global_analyzer
+                    get_global_analyzer().invalidate_cache()
+                    add_task_log(task_id, "🔄 全局统计缓存已刷新")
+                except:
+                    pass
+                
+                update_task(
+                    task_id,
+                    "completed",
+                    f"全区收益计算完成: {processed_groups} 个群组",
+                    {
+                        "groups_processed": processed_groups,
+                        "groups_total": len(groups),
+                        "groups_with_auto_extract": groups_with_auto_extract,
+                        "mentions_extracted_total": mentions_extracted_total,
+                        "performance_processed_total": performance_processed_total,
+                    }
+                )
+
+        except Exception as e:
+            add_task_log(task_id, f"❌ 全区计算异常: {e}")
+            update_task(task_id, "failed", f"全区计算失败: {e}")
+
+    background_tasks.add_task(_global_analyze_task, task_id)
+    return {"task_id": task_id, "message": "全区计算任务已启动"}
+
 @app.get("/api/global/stats")
 async def global_stats():
     """全局统计概览"""
@@ -5388,6 +6091,62 @@ async def global_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"全局统计失败: {str(e)}")
 
+@app.get("/api/global/hot-words")
+async def get_global_hot_words(
+    days: int = 1,
+    limit: int = 50,
+    force: bool = False,
+    window_hours: Optional[int] = None,
+    normalize: bool = True,
+    fallback: bool = True,
+    fallback_windows: str = "24,36,48,168"
+):
+    """获取全局热词（滑动小时窗口，支持回退与归一化）。"""
+    try:
+        allowed_windows = {24, 36, 48, 168}
+        requested_window = int(window_hours or (int(days or 1) * 24))
+        if requested_window not in allowed_windows:
+            raise HTTPException(status_code=400, detail=f"window_hours 仅支持 {sorted(allowed_windows)}")
+
+        parsed_fallback_windows: List[int] = []
+        for token in str(fallback_windows or "").split(","):
+            t = token.strip()
+            if not t:
+                continue
+            try:
+                w = int(t)
+            except Exception:
+                continue
+            if w in allowed_windows and w not in parsed_fallback_windows:
+                parsed_fallback_windows.append(w)
+        if not parsed_fallback_windows:
+            parsed_fallback_windows = [24, 36, 48, 168]
+
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_hot_words(
+            days=days,
+            limit=limit,
+            force_refresh=force,
+            window_hours=requested_window,
+            normalize=normalize,
+            fallback=fallback,
+            fallback_windows=parsed_fallback_windows,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error(f"Failed to get global hot words: {e}")
+        return {
+            "words": [],
+            "window_hours_requested": int(window_hours or (int(days or 1) * 24)),
+            "window_hours_effective": int(window_hours or (int(days or 1) * 24)),
+            "fallback_applied": False,
+            "fallback_reason": f"服务异常: {str(e)}",
+            "data_points_total": 0,
+            "time_range": {},
+        }
+
 
 @app.get("/api/global/win-rate")
 async def get_global_win_rate(
@@ -5395,6 +6154,7 @@ async def get_global_win_rate(
     return_period: str = 'return_5d',
     limit: int = 1000,
     start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     sort_by: str = 'win_rate',
     order: str = 'desc',
     page: int = 1,
@@ -5412,13 +6172,14 @@ async def get_global_win_rate(
             return_period=return_period,
             limit=limit,
             start_date=start_date,
+            end_date=end_date,
             sort_by=sort_by,
             order=order,
             page=page,
             page_size=page_size
         )
         duration = time.time() - start_time
-        log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, date={start_date})")
+        log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, start={start_date}, end={end_date})")
         return data  # Now returns a dict with pagination info
     except Exception as e:
         log_error(f"Failed to get global win rate: {e}")
@@ -5437,27 +6198,163 @@ async def global_stock_events(stock_code: str):
 
 
 @app.get("/api/global/sector-heat")
-async def get_global_sector_heat(start_date: Optional[str] = None):
+async def get_global_sector_heat(start_date: Optional[str] = None, end_date: Optional[str] = None):
     """
     Get global sector heat map.
     """
     try:
         from global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_heat(start_date=start_date)
+        return analyzer.get_global_sector_heat(start_date=start_date, end_date=end_date)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
 
 
+@app.get("/api/global/sector-topics")
+async def get_global_sector_topics(sector: str,
+                                   start_date: Optional[str] = None,
+                                   end_date: Optional[str] = None,
+                                   page: int = 1,
+                                   page_size: int = 20):
+    """全局板块话题明细（跨群组）"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_global_sector_topics(
+            sector=sector,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            page_size=page_size
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"全局板块话题查询失败: {str(e)}")
+
+
 @app.get("/api/global/signals")
-async def global_signals(lookback_days: int = 7, min_mentions: int = 2):
+async def global_signals(lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None):
     """全局信号雷达"""
     try:
         from global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
-        return analyzer.get_global_signals(lookback_days, min_mentions)
+        return analyzer.get_global_signals(lookback_days, min_mentions, start_date=start_date, end_date=end_date)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"信号查询失败: {str(e)}")
+
+
+@app.post("/api/stocks/exclude/cleanup")
+async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = None):
+    """清理被 stock_exclude.json 命中的历史股票数据"""
+    try:
+        from stock_exclusion import build_sql_exclusion_clause
+        from db_path_manager import get_db_path_manager
+
+        if scope not in ("all", "group"):
+            raise HTTPException(status_code=400, detail="scope 仅支持 all 或 group")
+        if scope == "group" and not group_id:
+            raise HTTPException(status_code=400, detail="scope=group 时必须提供 group_id")
+
+        manager = get_db_path_manager()
+        groups = manager.list_all_groups()
+        if scope == "group":
+            groups = [g for g in groups if str(g.get("group_id")) == str(group_id)]
+
+        exclude_clause, exclude_params = build_sql_exclusion_clause("stock_code", "stock_name")
+        if not exclude_clause:
+            return {
+                "groups_processed": 0,
+                "mentions_deleted": 0,
+                "performances_deleted": 0,
+                "details": [],
+                "message": "未配置排除规则，无需清理"
+            }
+
+        total_mentions_deleted = 0
+        total_perf_deleted = 0
+        details: List[Dict[str, Any]] = []
+
+        for group in groups:
+            gid = str(group.get("group_id"))
+            db_path = group.get("topics_db")
+            if not db_path or not os.path.exists(db_path):
+                continue
+
+            mentions_deleted = 0
+            perf_deleted = 0
+            conn = None
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=30)
+                cursor = conn.cursor()
+
+                cursor.execute('''
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'stock_mentions'
+                ''')
+                if cursor.fetchone() is None:
+                    continue
+
+                cursor.execute(
+                    f"SELECT id FROM stock_mentions WHERE NOT (1=1 {exclude_clause})",
+                    exclude_params
+                )
+                mention_ids = [row[0] for row in cursor.fetchall()]
+
+                if mention_ids:
+                    placeholders = ",".join(["?"] * len(mention_ids))
+                    cursor.execute(
+                        f"DELETE FROM mention_performance WHERE mention_id IN ({placeholders})",
+                        mention_ids
+                    )
+                    perf_deleted = cursor.rowcount or 0
+
+                    cursor.execute(
+                        f"DELETE FROM stock_mentions WHERE id IN ({placeholders})",
+                        mention_ids
+                    )
+                    mentions_deleted = cursor.rowcount or 0
+
+                conn.commit()
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                details.append({
+                    "group_id": gid,
+                    "mentions_deleted": 0,
+                    "performances_deleted": 0,
+                    "error": str(e)
+                })
+                continue
+            finally:
+                if conn:
+                    conn.close()
+
+            total_mentions_deleted += mentions_deleted
+            total_perf_deleted += perf_deleted
+            details.append({
+                "group_id": gid,
+                "mentions_deleted": mentions_deleted,
+                "performances_deleted": perf_deleted
+            })
+
+        try:
+            from global_analyzer import get_global_analyzer
+            get_global_analyzer().invalidate_cache()
+        except Exception:
+            pass
+
+        return {
+            "groups_processed": len(details),
+            "mentions_deleted": total_mentions_deleted,
+            "performances_deleted": total_perf_deleted,
+            "details": details
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"清理排除股票失败: {str(e)}")
 
 
 @app.get("/api/global/groups")
@@ -5469,6 +6366,17 @@ async def global_groups_overview():
         return analyzer.get_groups_overview()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
+
+
+@app.get("/api/global/topics")
+async def global_whitelist_topics(page: int = 1, per_page: int = 20, search: Optional[str] = None):
+    """白名单群组话题聚合（按最新提及时间排序）"""
+    try:
+        from global_analyzer import get_global_analyzer
+        analyzer = get_global_analyzer()
+        return analyzer.get_whitelist_topic_mentions(page=page, per_page=per_page, search=search)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取白名单话题失败: {str(e)}")
 
 
 def _get_global_ai_analyzer() -> AIAnalyzer:
@@ -5531,9 +6439,355 @@ async def global_ai_history_detail(summary_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取全局详情失败: {str(e)}")
 
+class ScanFilterConfigRequest(BaseModel):
+    default_action: str = Field(default="include")
+    whitelist_group_ids: List[str] = Field(default_factory=list)
+    blacklist_group_ids: List[str] = Field(default_factory=list)
+
+
+@app.get("/api/global/scan-filter/config")
+async def get_global_scan_filter_config():
+    """获取非股票群排除规则（手动白黑名单）"""
+    try:
+        from group_scan_filter import get_filter_config, CONFIG_FILE
+        data = get_filter_config()
+        data["source_file"] = CONFIG_FILE
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取扫描过滤配置失败: {str(e)}")
+
+
+@app.put("/api/global/scan-filter/config")
+async def update_global_scan_filter_config(request: ScanFilterConfigRequest):
+    """更新非股票群排除规则（手动白黑名单）"""
+    try:
+        from group_scan_filter import save_filter_config
+        data = save_filter_config(
+            default_action=request.default_action,
+            whitelist_group_ids=request.whitelist_group_ids,
+            blacklist_group_ids=request.blacklist_group_ids
+        )
+        return {
+            **data,
+            "effective_counts": {
+                "whitelist": len(data.get("whitelist_group_ids", [])),
+                "blacklist": len(data.get("blacklist_group_ids", [])),
+            }
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新扫描过滤配置失败: {str(e)}")
+
+
+@app.get("/api/global/scan-filter/preview")
+async def preview_global_scan_filter(exclude_non_stock: bool = True):
+    """预览当前扫描过滤命中结果"""
+    try:
+        from db_path_manager import get_db_path_manager
+        from group_scan_filter import decide_group
+
+        manager = get_db_path_manager()
+        groups = manager.list_all_groups()
+
+        included_groups = []
+        excluded_groups = []
+        reason_counts: Dict[str, int] = {}
+
+        for g in groups:
+            gid = str(g.get("group_id"))
+            gname = _get_group_name_for_scan_filter(gid, g.get("topics_db"))
+            decision, reason = decide_group(gid)
+
+            item = {
+                "group_id": gid,
+                "group_name": gname or gid,
+                "decision": decision,
+                "reason": reason,
+            }
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            if decision == "included":
+                included_groups.append(item)
+            else:
+                excluded_groups.append(item)
+
+        return {
+            "total_groups": len(groups),
+            "included_groups": included_groups,
+            "excluded_groups": excluded_groups,
+            "reason_counts": reason_counts,
+            "compat_note": (
+                "exclude_non_stock 参数已兼容保留，当前版本始终应用白黑名单规则"
+                if exclude_non_stock is False else None
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"预览扫描过滤结果失败: {str(e)}")
+
+
+@app.get("/api/global/scan-filter/cleanup-blacklist/preview")
+async def preview_blacklist_cleanup():
+    """预览黑名单群组可清理的分析数据规模。"""
+    try:
+        from db_path_manager import get_db_path_manager
+        from group_scan_filter import get_filter_config
+        import sqlite3
+
+        cfg = get_filter_config()
+        blacklist_ids = set(str(v).strip() for v in cfg.get("blacklist_group_ids", []) if str(v).strip())
+        manager = get_db_path_manager()
+        groups = manager.list_all_groups()
+
+        details = []
+        total_mentions = 0
+        total_performance = 0
+
+        for g in groups:
+            gid = str(g.get("group_id", "")).strip()
+            if not gid or gid not in blacklist_ids:
+                continue
+
+            db_path = g.get("topics_db")
+            mentions_count = 0
+            perf_count = 0
+            if db_path and os.path.exists(db_path):
+                conn = None
+                try:
+                    conn = sqlite3.connect(db_path, timeout=30)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='stock_mentions'")
+                    if (cursor.fetchone() or [0])[0]:
+                        cursor.execute("SELECT COUNT(*) FROM stock_mentions")
+                        mentions_count = int((cursor.fetchone() or [0])[0] or 0)
+                        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='mention_performance'")
+                        if (cursor.fetchone() or [0])[0]:
+                            cursor.execute("SELECT COUNT(*) FROM mention_performance")
+                            perf_count = int((cursor.fetchone() or [0])[0] or 0)
+                except Exception:
+                    pass
+                finally:
+                    if conn:
+                        conn.close()
+
+            total_mentions += mentions_count
+            total_performance += perf_count
+            details.append({
+                "group_id": gid,
+                "group_name": _get_group_name_for_scan_filter(gid, db_path),
+                "stock_mentions_count": mentions_count,
+                "mention_performance_count": perf_count,
+            })
+
+        return {
+            "blacklist_group_count": len(blacklist_ids),
+            "matched_group_count": len(details),
+            "total_stock_mentions": total_mentions,
+            "total_mention_performance": total_performance,
+            "groups": details,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"预览黑名单清理失败: {str(e)}")
+
+
+@app.post("/api/global/scan-filter/cleanup-blacklist")
+async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
+    """清理黑名单群组中的分析数据（stock_mentions / mention_performance）。"""
+    global task_counter
+    task_counter += 1
+    task_id = f"global_cleanup_blacklist_{task_counter}"
+
+    current_tasks[task_id] = {
+        "task_id": task_id,
+        "type": "global_cleanup_blacklist",
+        "status": "running",
+        "message": "正在初始化黑名单数据清理...",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "result": None,
+    }
+    task_logs[task_id] = []
+    task_stop_flags[task_id] = False
+
+    def _cleanup_task(task_id: str):
+        try:
+            from db_path_manager import get_db_path_manager
+            from group_scan_filter import get_filter_config
+            import sqlite3
+
+            update_task(task_id, "running", "开始清理黑名单历史分析数据...")
+            cfg = get_filter_config()
+            blacklist_ids = set(str(v).strip() for v in cfg.get("blacklist_group_ids", []) if str(v).strip())
+            manager = get_db_path_manager()
+            groups = manager.list_all_groups()
+            target_groups = [g for g in groups if str(g.get("group_id", "")).strip() in blacklist_ids]
+
+            add_task_log(task_id, f"📋 黑名单群组总数: {len(blacklist_ids)}，本地匹配: {len(target_groups)}")
+            if not target_groups:
+                update_task(task_id, "completed", "黑名单清理完成: 无匹配本地群组")
+                return
+
+            total_mentions_deleted = 0
+            total_perf_deleted = 0
+            processed = 0
+
+            for i, g in enumerate(target_groups, 1):
+                if is_task_stopped(task_id):
+                    add_task_log(task_id, "🛑 清理任务已停止")
+                    break
+
+                gid = str(g.get("group_id", "")).strip()
+                db_path = g.get("topics_db")
+                add_task_log(task_id, f"👉 [{i}/{len(target_groups)}] 清理群组 {gid}")
+
+                if not db_path or not os.path.exists(db_path):
+                    add_task_log(task_id, f"   ⚠️ 群组 {gid} 无可用 topics_db，跳过")
+                    continue
+
+                conn = None
+                try:
+                    conn = sqlite3.connect(db_path, timeout=30)
+                    cursor = conn.cursor()
+
+                    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='stock_mentions'")
+                    has_mentions = bool((cursor.fetchone() or [0])[0])
+                    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='mention_performance'")
+                    has_perf = bool((cursor.fetchone() or [0])[0])
+                    if not has_mentions:
+                        add_task_log(task_id, f"   ℹ️ 群组 {gid} 无 stock_mentions，跳过")
+                        continue
+
+                    perf_deleted = 0
+                    if has_perf:
+                        cursor.execute(
+                            "DELETE FROM mention_performance WHERE mention_id IN (SELECT id FROM stock_mentions)"
+                        )
+                        perf_deleted = cursor.rowcount or 0
+
+                    cursor.execute("DELETE FROM stock_mentions")
+                    mentions_deleted = cursor.rowcount or 0
+                    conn.commit()
+
+                    total_perf_deleted += perf_deleted
+                    total_mentions_deleted += mentions_deleted
+                    processed += 1
+                    add_task_log(task_id, f"   ✅ 完成: 删除提及 {mentions_deleted}，收益 {perf_deleted}")
+                except Exception as e:
+                    if conn:
+                        conn.rollback()
+                    add_task_log(task_id, f"   ❌ 清理失败: {e}")
+                finally:
+                    if conn:
+                        conn.close()
+
+            try:
+                from global_analyzer import get_global_analyzer
+                get_global_analyzer().invalidate_cache()
+                add_task_log(task_id, "🔄 全局统计缓存已刷新")
+            except Exception:
+                pass
+
+            if is_task_stopped(task_id):
+                update_task(task_id, "cancelled", "黑名单清理已停止")
+            else:
+                update_task(
+                    task_id,
+                    "completed",
+                    f"黑名单清理完成: {processed}/{len(target_groups)} 个群组，删除提及 {total_mentions_deleted}，收益 {total_perf_deleted}",
+                    {
+                        "groups_processed": processed,
+                        "groups_total": len(target_groups),
+                        "mentions_deleted": total_mentions_deleted,
+                        "performances_deleted": total_perf_deleted,
+                    },
+                )
+        except Exception as e:
+            add_task_log(task_id, f"❌ 黑名单清理异常: {e}")
+            update_task(task_id, "failed", f"黑名单清理失败: {e}")
+
+    background_tasks.add_task(_cleanup_task, task_id)
+    return {"task_id": task_id, "message": "黑名单清理任务已启动"}
+
+
+STOCK_GROUP_HINT_KEYWORDS = (
+    "股票", "a股", "港股", "美股", "基金", "投资", "交易", "复盘", "量化", "财经", "证券", "研报", "择时"
+)
+
+
+def _get_group_name_for_scan_filter(group_id: str, topics_db_path: Optional[str]) -> str:
+    """尽量获取群组名称（本地DB -> group_meta.json）"""
+    import sqlite3
+    from pathlib import Path
+
+    if topics_db_path and os.path.exists(topics_db_path):
+        try:
+            conn = sqlite3.connect(topics_db_path, timeout=10)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM groups WHERE group_id = ? LIMIT 1", (int(group_id),))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+
+    try:
+        path_manager = get_db_path_manager()
+        group_dir = path_manager.get_group_data_dir(str(group_id))
+        meta_path = Path(group_dir) / "group_meta.json"
+        if meta_path.exists():
+            with meta_path.open("r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("name"):
+                return str(meta["name"])
+    except Exception:
+        pass
+
+    return ""
+
+
+def _group_has_stock_mentions_for_scan_filter(topics_db_path: Optional[str]) -> bool:
+    """判断群组本地库是否已有股票提及记录。"""
+    import sqlite3
+
+    if not topics_db_path or not os.path.exists(topics_db_path):
+        return False
+
+    try:
+        conn = sqlite3.connect(topics_db_path, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stock_mentions'")
+        has_table = cursor.fetchone() is not None
+        if not has_table:
+            conn.close()
+            return False
+
+        cursor.execute("SELECT 1 FROM stock_mentions LIMIT 1")
+        has_mentions = cursor.fetchone() is not None
+        conn.close()
+        return has_mentions
+    except Exception:
+        return False
+
+
+def _is_stock_candidate_group_for_scan(group: Dict[str, Any]):
+    """扫描过滤规则：历史有股票提及，或群名包含股票关键词。"""
+    group_id = str(group.get("group_id", ""))
+    topics_db_path = group.get("topics_db")
+    group_name = _get_group_name_for_scan_filter(group_id, topics_db_path)
+    normalized_name = group_name.lower()
+
+    name_hit = any(keyword in normalized_name for keyword in STOCK_GROUP_HINT_KEYWORDS)
+    mentions_hit = _group_has_stock_mentions_for_scan_filter(topics_db_path)
+
+    if mentions_hit:
+        return True, "已有股票提及"
+    if name_hit:
+        return True, "群名命中关键词"
+    return False, "无提及且群名未命中"
+
 
 @app.post("/api/global/scan")
-def scan_global(background_tasks: BackgroundTasks, force: bool = False):
+def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_non_stock: bool = False):
     """全局扫描所有群组的股票数据（后台任务）"""
     global task_counter
     task_counter += 1
@@ -5557,52 +6811,59 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False):
             add_task_log(task_id, "🚀 开始全局股票提及扫描...")
             
             from db_path_manager import get_db_path_manager
-            from stock_analyzer import StockAnalyzer
+            from global_pipeline import run_serial_incremental_pipeline
             
             manager = get_db_path_manager()
             groups = manager.list_all_groups()
-            
-            add_task_log(task_id, f"📋 共发现 {len(groups)} 个群组")
-            
-            total_mentions = 0
-            total_stocks = set()
-            processed_groups = 0
-            
-            for i, group in enumerate(groups, 1):
-                if is_task_stopped(task_id):
-                    add_task_log(task_id, "🛑 任务已被用户停止")
-                    break
-                
-                group_id = group['group_id']
-                add_task_log(task_id, "")
-                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在扫描群组 {group_id}...")
-                
-                try:
-                    # 使用 lambda 捕获 task_id，将 StockAnalyzer 的日志重定向到当前任务日志
-                    # 注意：StockAnalyzer 的日志回调只接受 msg 字符串
-                    analyzer = StockAnalyzer(group_id, log_callback=lambda msg: add_task_log(task_id, f"   {msg}"))
-                    result = analyzer.scan_group(force=force)
-                    
-                    mentions = result.get('mentions_extracted', 0)
-                    stocks = result.get('unique_stocks', 0)
-                    total_mentions += mentions
-                    # 注意：这里 total_stocks 只是粗略统计，因为不同群组可能统计到相同的股票 unique_stocks 是数字
-                    # 若要精确统计全局去重股票数，需要 analyzer 返回具体股票代码集合，目前 scan_group 只返回数量
-                    # 这里暂不精确累加 total_stocks
-                    
-                    add_task_log(task_id, f"   ✅ 群组 {group_id} 扫描完成: {mentions} 次提及")
-                    processed_groups += 1
-                    
-                except Exception as ge:
-                    add_task_log(task_id, f"   ❌ 群组 {group_id} 扫描失败: {ge}")
-            
+            original_count = len(groups)
+            add_task_log(task_id, f"📋 共发现 {original_count} 个群组")
+            if force:
+                add_task_log(task_id, "ℹ️ 当前全局扫描的编排模式不区分 force，按增量采集执行")
+            if exclude_non_stock is False:
+                add_task_log(task_id, "ℹ️ 参数 exclude_non_stock 已兼容保留，当前版本始终强制应用白黑名单规则")
+
+            filtered = _apply_group_scan_filter_for_tasks(groups)
+            groups = filtered["included_groups"]
+            excluded_groups = filtered["excluded_groups"]
+            reason_counts = filtered["reason_counts"]
+            default_action = filtered["default_action"]
+            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
+            add_task_log(task_id, f"🧹 白黑名单过滤后：保留 {len(groups)}/{original_count} 个群组")
+            if reason_counts:
+                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
+            if excluded_groups:
+                preview = "，".join(
+                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
+                    for g in excluded_groups[:20]
+                )
+                suffix = " ..." if len(excluded_groups) > 20 else ""
+                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
+
+            if not groups:
+                add_task_log(task_id, "ℹ️ 过滤后无可扫描群组，任务结束")
+                update_task(task_id, "completed", "全局扫描完成: 过滤后无可扫描群组")
+                return
+
+            successes, failures = run_serial_incremental_pipeline(
+                groups=groups,
+                pages=2,
+                per_page=20,
+                calc_window_days=365,
+                do_analysis=False,
+                stop_check=lambda: is_task_stopped(task_id),
+                log_callback=lambda msg: add_task_log(task_id, msg),
+            )
+            total_mentions = sum((item.get("extract") or {}).get("mentions_extracted", 0) for item in successes)
+
             if is_task_stopped(task_id):
                 update_task(task_id, "cancelled", "全局扫描已停止")
             else:
                 add_task_log(task_id, "")
                 add_task_log(task_id, "=" * 50)
-                add_task_log(task_id, f"🎉 全局扫描完成！共处理 {processed_groups}/{len(groups)} 个群组")
+                add_task_log(task_id, f"🎉 全局扫描完成！共处理 {len(successes)}/{len(groups)} 个群组")
                 add_task_log(task_id, f"📊 本次累计提取提及: {total_mentions} 次")
+                if failures:
+                    add_task_log(task_id, f"⚠️ 失败群组: {len(failures)} 个")
                 
                 # 触发全局分析器缓存失效
                 try:
@@ -5612,7 +6873,7 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False):
                 except:
                     pass
                 
-                update_task(task_id, "completed", f"全局扫描完成: {processed_groups} 个群组, {total_mentions} 次提及")
+                update_task(task_id, "completed", f"全局扫描完成: {len(successes)} 个群组, {total_mentions} 次提及")
 
         except Exception as e:
             add_task_log(task_id, f"❌ 全局扫描异常: {e}")
@@ -5634,29 +6895,61 @@ async def scheduler_status():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取调度器状态失败: {str(e)}")
 
+@app.get("/api/scheduler/next-runs")
+async def scheduler_next_runs(count: int = 5):
+    """下一批调度触发时间点。"""
+    try:
+        from auto_scheduler import get_scheduler
+        scheduler = get_scheduler()
+        return scheduler.get_next_runs(count=count)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取下次调度时间失败: {str(e)}")
+
 
 @app.post("/api/scheduler/start")
 async def scheduler_start():
     """启动调度器"""
+    from auto_scheduler import get_scheduler
+    scheduler = get_scheduler()
     try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
         await scheduler.start()
-        return {"status": "started", "message": "调度器已启动"}
+        return {
+            "success": True,
+            "status": "started",
+            "message": "调度器已启动",
+            "scheduler": scheduler.get_status()
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"启动调度器失败: {str(e)}")
+        log_error(f"启动调度器失败: {e}")
+        return {
+            "success": False,
+            "status": "error",
+            "message": f"启动调度器失败: {str(e)}",
+            "scheduler": scheduler.get_status()
+        }
 
 
 @app.post("/api/scheduler/stop")
 async def stop_scheduler_api():
     """停止调度器"""
+    from auto_scheduler import get_scheduler
+    scheduler = get_scheduler()
     try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
         await scheduler.stop()
-        return {"status": "stopped", "message": "调度器已停止"}
+        return {
+            "success": True,
+            "status": "stopped",
+            "message": "调度器已停止",
+            "scheduler": scheduler.get_status()
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"停止调度器失败: {str(e)}")
+        log_error(f"停止调度器失败: {e}")
+        return {
+            "success": False,
+            "status": "error",
+            "message": f"停止调度器失败: {str(e)}",
+            "scheduler": scheduler.get_status()
+        }
 
 
 @app.post("/api/scheduler/analyze")
@@ -5667,7 +6960,7 @@ async def analyze_scheduler_api():
     scheduler = get_scheduler()
     # Check if we can trigger analysis
     asyncio.create_task(scheduler.trigger_manual_analysis_task())
-    return {"status": "analysis_triggered", "message": "数据分析已触发"}
+    return {"status": "analysis_triggered", "message": "数据分析已触发", "task_id": "scheduler"}
 
 
 @app.post("/api/scheduler/stop_analysis")
@@ -5705,4 +6998,6 @@ if __name__ == "__main__":
             port = int(sys.argv[2])
         except ValueError:
             port = 8208
+    print(f"[startup] API version=1.0.0, port={port}")
+    print("[startup] feature routes: /api/global/sector-topics, /api/scheduler/next-runs, /api/meta/features")
     uvicorn.run(app, host="0.0.0.0", port=port)

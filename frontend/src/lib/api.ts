@@ -12,14 +12,29 @@ export interface ApiResponse<T = any> {
   error?: string;
 }
 
+export interface WinRateResponse {
+  data: any[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface Task {
   task_id: string;
   type: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'stopped' | 'idle';
   message: string;
   result?: any;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskSummaryResponse {
+  running_by_type: Record<string, Task>;
+  latest_by_type: Record<string, Task>;
+  running_by_task_type?: Record<string, Task>;
+  latest_by_task_type?: Record<string, Task>;
+  scheduler?: Record<string, any>;
 }
 
 export interface DatabaseStats {
@@ -153,6 +168,61 @@ export interface AccountSelf {
   raw_json?: any;
 }
 
+export interface GlobalHotWordItem {
+  name: string;
+  value: number;
+  raw_count?: number;
+  normalized_count?: number;
+}
+
+export interface GlobalHotWordResponse {
+  words: GlobalHotWordItem[];
+  window_hours_requested: number;
+  window_hours_effective: number;
+  fallback_applied: boolean;
+  fallback_reason?: string | null;
+  data_points_total: number;
+  time_range?: {
+    start_at?: string;
+    end_at?: string;
+  };
+}
+
+export interface StockEvent {
+  mention_id?: number;
+  topic_id?: number | string;
+  group_id?: number | string;
+  group_name?: string;
+  stock_code?: string;
+  stock_name?: string;
+  mention_date?: string;
+  mention_time?: string;
+  context?: string;
+  context_snippet?: string;
+  full_text?: string;
+  text_snippet?: string;
+  stocks?: Array<{ stock_code: string; stock_name: string }>;
+  price_at_mention?: number | null;
+  return_1d?: number | null;
+  return_3d?: number | null;
+  return_5d?: number | null;
+  return_10d?: number | null;
+  return_20d?: number | null;
+  excess_return_5d?: number | null;
+  excess_return_10d?: number | null;
+  max_return?: number | null;
+  max_drawdown?: number | null;
+}
+
+export interface StockEventsResponse {
+  stock_code: string;
+  stock_name?: string;
+  total_mentions?: number;
+  win_rate_5d?: number | null;
+  avg_return_5d?: number | null;
+  events?: StockEvent[];
+}
+
 // API客户端类
 class ApiClient {
   private baseUrl: string;
@@ -188,6 +258,10 @@ class ApiClient {
     return this.request('/api/health');
   }
 
+  async getFeatures(): Promise<any> {
+    return this.request('/api/meta/features');
+  }
+
   // 配置相关
   async getConfig() {
     return this.request('/api/config');
@@ -208,6 +282,10 @@ class ApiClient {
   // 任务相关
   async getTasks(): Promise<Task[]> {
     return this.request('/api/tasks');
+  }
+
+  async getTaskSummary(): Promise<TaskSummaryResponse> {
+    return this.request('/api/tasks/summary');
   }
 
   async getTask(taskId: string): Promise<Task> {
@@ -281,7 +359,7 @@ class ApiClient {
     });
   }
 
-  async getTopicDetail(topicId: number | string, groupId: number) {
+  async getTopicDetail(topicId: number | string, groupId: number | string) {
     // 统一转为字符串，避免大整数在前端被 Number 处理后精度丢失
     const id = String(topicId);
     return this.request(`/api/topics/${id}/${groupId}`);
@@ -773,7 +851,7 @@ class ApiClient {
     return this.request(`/api/groups/${groupId}/stock/mentions?${q}`);
   }
 
-  async getStockEvents(groupId: number | string, stockCode: string): Promise<any> {
+  async getStockEvents(groupId: number | string, stockCode: string): Promise<StockEventsResponse> {
     return this.request(`/api/groups/${groupId}/stock/${stockCode}/events`);
   }
 
@@ -783,20 +861,48 @@ class ApiClient {
 
   async getStockWinRate(groupId: number | string, params?: {
     min_mentions?: number; return_period?: string; limit?: number;
-  }): Promise<any> {
+    start_date?: string; end_date?: string; page?: number; page_size?: number;
+    sort_by?: string; order?: string;
+  }): Promise<WinRateResponse> {
     const q = new URLSearchParams();
     if (params?.min_mentions) q.append('min_mentions', params.min_mentions.toString());
     if (params?.return_period) q.append('return_period', params.return_period);
     if (params?.limit) q.append('limit', params.limit.toString());
+    if (params?.start_date) q.append('start_date', params.start_date);
+    if (params?.end_date) q.append('end_date', params.end_date);
+    if (params?.page) q.append('page', params.page.toString());
+    if (params?.page_size) q.append('page_size', params.page_size.toString());
+    if (params?.sort_by) q.append('sort_by', params.sort_by);
+    if (params?.order) q.append('order', params.order);
     return this.request(`/api/groups/${groupId}/stock/win-rate?${q}`);
   }
 
-  async getSectorHeat(groupId: number | string): Promise<any> {
-    return this.request(`/api/groups/${groupId}/stock/sector-heat`);
+  async getSectorHeat(groupId: number | string, startDate?: string, endDate?: string): Promise<any> {
+    const q = new URLSearchParams();
+    if (startDate) q.append('start_date', startDate);
+    if (endDate) q.append('end_date', endDate);
+    return this.request(`/api/groups/${groupId}/stock/sector-heat?${q}`);
   }
 
-  async getStockSignals(groupId: number | string, lookbackDays: number = 7, minMentions: number = 2): Promise<any> {
-    return this.request(`/api/groups/${groupId}/stock/signals?lookback_days=${lookbackDays}&min_mentions=${minMentions}`);
+  async getSectorTopics(groupId: number | string, params: {
+    sector: string; start_date?: string; end_date?: string; page?: number; page_size?: number;
+  }): Promise<any> {
+    const q = new URLSearchParams();
+    q.append('sector', params.sector);
+    if (params.start_date) q.append('start_date', params.start_date);
+    if (params.end_date) q.append('end_date', params.end_date);
+    if (params.page) q.append('page', params.page.toString());
+    if (params.page_size) q.append('page_size', params.page_size.toString());
+    return this.request(`/api/groups/${groupId}/stock/sector-topics?${q}`);
+  }
+
+  async getStockSignals(groupId: number | string, lookbackDays: number = 7, minMentions: number = 2, startDate?: string, endDate?: string): Promise<any> {
+    const q = new URLSearchParams();
+    q.append('lookback_days', lookbackDays.toString());
+    q.append('min_mentions', minMentions.toString());
+    if (startDate) q.append('start_date', startDate);
+    if (endDate) q.append('end_date', endDate);
+    return this.request(`/api/groups/${groupId}/stock/signals?${q}`);
   }
 
   // ========== AI 智能分析 API ==========
@@ -837,11 +943,64 @@ class ApiClient {
     return this.request('/api/global/stats');
   }
 
+  async getGlobalHotWords(params?: {
+    windowHours?: 24 | 36 | 48 | 168;
+    limit?: number;
+    force?: boolean;
+    normalize?: boolean;
+    fallback?: boolean;
+  }): Promise<GlobalHotWordResponse> {
+    const p = params || {};
+    const windowHours = p.windowHours ?? 24;
+    const limit = p.limit ?? 50;
+    const force = p.force ?? false;
+    const normalize = p.normalize ?? true;
+    const fallback = p.fallback ?? true;
+
+    const q = new URLSearchParams({
+      window_hours: String(windowHours),
+      limit: String(limit),
+      force: String(force),
+      normalize: String(normalize),
+      fallback: String(fallback),
+      fallback_windows: '24,36,48,168',
+      // 兼容旧后端实现，按天传递后备口径
+      days: String(Math.max(1, Math.ceil(windowHours / 24))),
+    });
+
+    const res = await this.request<any>(`/api/global/hot-words?${q.toString()}`);
+
+    // 兼容旧接口：若返回数组则包装成新结构
+    if (Array.isArray(res)) {
+      const words = (res || []) as GlobalHotWordItem[];
+      return {
+        words,
+        window_hours_requested: windowHours,
+        window_hours_effective: windowHours,
+        fallback_applied: false,
+        fallback_reason: null,
+        data_points_total: words.reduce((acc, w) => acc + (Number(w.raw_count ?? w.value) || 0), 0),
+        time_range: {},
+      };
+    }
+
+    return {
+      words: Array.isArray(res?.words) ? res.words : [],
+      window_hours_requested: Number(res?.window_hours_requested ?? windowHours),
+      window_hours_effective: Number(res?.window_hours_effective ?? windowHours),
+      fallback_applied: Boolean(res?.fallback_applied),
+      fallback_reason: res?.fallback_reason ?? null,
+      data_points_total: Number(res?.data_points_total ?? 0),
+      time_range: res?.time_range || {},
+    };
+  }
+
   async getGlobalWinRate(
     minMentions: number = 2,
     returnPeriod: string = 'return_5d',
     limit: number = 1000,
     startDate?: string,
+    endDate?: string,
     sortBy: string = 'win_rate',
     order: string = 'desc',
     page: number = 1,
@@ -859,6 +1018,9 @@ class ApiClient {
     if (startDate) {
       params.append('start_date', startDate);
     }
+    if (endDate) {
+      params.append('end_date', endDate);
+    }
     const res = await this.request(`/api/global/win-rate?${params.toString()}`);
 
     // New format: { data: [...], total: N, ... }
@@ -875,32 +1037,101 @@ class ApiClient {
     return { data: [], total: 0, page: 1, page_size: pageSize };
   }
 
-  async getGlobalStockEvents(stockCode: string): Promise<any> {
+  async getGlobalStockEvents(stockCode: string): Promise<StockEventsResponse> {
     return this.request(`/api/global/stock/${stockCode}/events`);
   }
 
-  async getGlobalSectorHeat(startDate?: string): Promise<any> {
+  async getGlobalSectorHeat(startDate?: string, endDate?: string): Promise<any> {
     const params = new URLSearchParams();
     if (startDate) {
       params.append('start_date', startDate);
     }
+    if (endDate) {
+      params.append('end_date', endDate);
+    }
     return this.request(`/api/global/sector-heat?${params.toString()}`);
+  }
+
+  async getGlobalSectorTopics(params: {
+    sector: string; start_date?: string; end_date?: string; page?: number; page_size?: number;
+  }): Promise<any> {
+    const q = new URLSearchParams();
+    q.append('sector', params.sector);
+    if (params.start_date) q.append('start_date', params.start_date);
+    if (params.end_date) q.append('end_date', params.end_date);
+    if (params.page) q.append('page', params.page.toString());
+    if (params.page_size) q.append('page_size', params.page_size.toString());
+    return this.request(`/api/global/sector-topics?${q.toString()}`);
   }
 
   async triggerManualAnalysis(): Promise<any> {
     return this.request('/api/scheduler/analyze', { method: 'POST' });
   }
 
-  async getGlobalSignals(lookbackDays: number = 7, minMentions: number = 2): Promise<any> {
-    return this.request(`/api/global/signals?lookback_days=${lookbackDays}&min_mentions=${minMentions}`);
+  async getGlobalSignals(
+    lookbackDays: number = 7,
+    minMentions: number = 2,
+    startDate?: string,
+    endDate?: string
+  ): Promise<any> {
+    const q = new URLSearchParams({
+      lookback_days: String(lookbackDays),
+      min_mentions: String(minMentions),
+    });
+    if (startDate) q.append('start_date', startDate);
+    if (endDate) q.append('end_date', endDate);
+    return this.request(`/api/global/signals?${q.toString()}`);
   }
 
   async getGlobalGroups(): Promise<any> {
     return this.request('/api/global/groups');
   }
 
-  async scanGlobal(force: boolean = false): Promise<any> {
-    return this.request(`/api/global/scan?force=${force}`, { method: 'POST' });
+  async getGlobalTopics(page: number = 1, perPage: number = 20, search?: string): Promise<any> {
+    const q = new URLSearchParams({
+      page: String(page),
+      per_page: String(perPage),
+    });
+    if (search?.trim()) q.append('search', search.trim());
+    return this.request(`/api/global/topics?${q.toString()}`);
+  }
+
+  async scanGlobal(force: boolean = false, excludeNonStock: boolean = false): Promise<any> {
+    return this.request(`/api/global/scan?force=${force}&exclude_non_stock=${excludeNonStock}`, { method: 'POST' });
+  }
+
+  async getGlobalScanFilterConfig(): Promise<any> {
+    return this.request('/api/global/scan-filter/config');
+  }
+
+  async updateGlobalScanFilterConfig(payload: {
+    default_action?: 'include' | 'exclude';
+    whitelist_group_ids: string[];
+    blacklist_group_ids: string[];
+  }): Promise<any> {
+    return this.request('/api/global/scan-filter/config', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async previewGlobalScanFilter(excludeNonStock: boolean = true): Promise<any> {
+    return this.request(`/api/global/scan-filter/preview?exclude_non_stock=${excludeNonStock}`);
+  }
+
+  async previewBlacklistCleanup(): Promise<any> {
+    return this.request('/api/global/scan-filter/cleanup-blacklist/preview');
+  }
+
+  async cleanupBlacklistData(): Promise<any> {
+    return this.request('/api/global/scan-filter/cleanup-blacklist', { method: 'POST' });
+  }
+
+  async cleanupExcludedStocks(scope: 'all' | 'group' = 'all', groupId?: string | number): Promise<any> {
+    const q = new URLSearchParams();
+    q.append('scope', scope);
+    if (scope === 'group' && groupId != null) q.append('group_id', String(groupId));
+    return this.request(`/api/stocks/exclude/cleanup?${q.toString()}`, { method: 'POST' });
   }
 
   async aiGlobalDailyBrief(lookbackDays: number = 7, force: boolean = false): Promise<any> {
@@ -927,6 +1158,10 @@ class ApiClient {
     return this.request('/api/scheduler/status');
   }
 
+  async getSchedulerNextRuns(count: number = 5): Promise<any> {
+    return this.request(`/api/scheduler/next-runs?count=${count}`);
+  }
+
   async startScheduler(): Promise<any> {
     return this.request('/api/scheduler/start', { method: 'POST' });
   }
@@ -943,6 +1178,61 @@ class ApiClient {
     return this.request('/api/scheduler/config', {
       method: 'POST',
       body: JSON.stringify(config),
+    });
+  }
+
+  // ========== 全区轮询操作 API ==========
+  async crawlGlobal(crawlSettings: {
+    mode?: 'latest' | 'all' | 'incremental' | 'range';
+    pages?: number;
+    per_page?: number;
+    start_time?: string;
+    end_time?: string;
+    max_items?: number;
+    last_days?: number;
+    // 间隔参数
+    crawl_interval_min?: number;
+    crawl_interval_max?: number;
+    long_sleep_interval_min?: number;
+    long_sleep_interval_max?: number;
+    pages_per_batch?: number;
+  } = {}) {
+    return this.request('/api/global/crawl', {
+      method: 'POST',
+      body: JSON.stringify(crawlSettings),
+    });
+  }
+
+  async collectGlobalFiles() {
+    return this.request('/api/global/files/collect', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async downloadGlobalFiles(downloadSettings?: {
+    max_files?: number;
+    sort_by?: string;
+    download_interval?: number;
+    long_sleep_interval?: number;
+    files_per_batch?: number;
+    download_interval_min?: number;
+    download_interval_max?: number;
+    long_sleep_interval_min?: number;
+    long_sleep_interval_max?: number;
+  }) {
+    return this.request('/api/global/files/download', {
+      method: 'POST',
+      body: JSON.stringify(downloadSettings || {}),
+    });
+  }
+
+  async analyzeGlobalPerformance(force: boolean = false) {
+    const params = new URLSearchParams();
+    if (force) params.append('force', 'true');
+    const url = `/api/global/analyze/performance${params.toString() ? '?' + params.toString() : ''}`;
+    return this.request(url, {
+      method: 'POST',
     });
   }
 }

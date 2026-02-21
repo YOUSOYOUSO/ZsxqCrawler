@@ -600,7 +600,8 @@ class AIAnalyzer:
         from stock_analyzer import StockAnalyzer
         analyzer = StockAnalyzer(group_id=self.group_id)
 
-        ranking = analyzer.get_win_rate_ranking(min_mentions=2, limit=top_n)
+        result = analyzer.get_win_rate_ranking(min_mentions=2, limit=top_n, page_size=top_n)
+        ranking = result.get('data', []) if isinstance(result, dict) else result
 
         if not ranking:
             return {'error': '暂无足够的股票数据进行共识分析', 'content': None}

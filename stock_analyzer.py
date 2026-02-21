@@ -20,6 +20,8 @@ import akshare as ak
 
 from db_path_manager import get_db_path_manager
 from logger_config import log_info, log_warning, log_error, log_debug
+from stock_exclusion import is_excluded_stock, build_sql_exclusion_clause
+from sector_heat import build_topic_time_filter, aggregate_sector_heat
 
 
 # ========== 常量 ==========
@@ -64,6 +66,10 @@ class StockAnalyzer:
     _global_name_to_code: Dict[str, str] = {}
     _global_built_at: float = 0.0
 
+    # 进程级表初始化缓存，避免多个实例重复建表/漏建表
+    _init_lock = threading.RLock()
+    _initialized_dbs: set = set()
+
     # 本地缓存时效（秒），默认12小时
     DICT_CACHE_TTL_SECONDS = int(os.environ.get("STOCK_DICT_CACHE_TTL_SECONDS", "43200"))
     DICT_CACHE_FILE = "stock_dict_cache.json"
@@ -76,8 +82,8 @@ class StockAnalyzer:
         # 话题数据库路径
         self.topics_db_path = self.db_path_manager.get_topics_db_path(group_id)
 
-        # 初始化股票分析相关表
-        self._init_stock_tables()
+        # 初始化股票分析相关表（幂等、防遗漏）
+        self._ensure_stock_tables()
 
         # 股票字典 (延迟加载)
         self._automaton = None
@@ -92,7 +98,10 @@ class StockAnalyzer:
         log_info(message)
 
     def _get_conn(self):
-        """获取带 WAL 模式和超时的数据库连接"""
+        """获取带 WAL 模式和超时的数据库连接，确保表已就绪"""
+        # 确保表存在，避免旧数据库缺表导致查询失败
+        self._ensure_stock_tables()
+
         conn = sqlite3.connect(self.topics_db_path, check_same_thread=False, timeout=30)
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA busy_timeout=30000')
@@ -100,88 +109,94 @@ class StockAnalyzer:
 
     # ========== 数据库初始化 ==========
 
-    def _init_stock_tables(self):
-        """在话题数据库中创建股票分析相关表"""
-        conn = self._get_conn()
-        cursor = conn.cursor()
+    def _ensure_stock_tables(self):
+        """在话题数据库中创建股票分析相关表（幂等，容错旧库缺表/缺列）"""
+        db_key = os.path.abspath(self.topics_db_path)
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stock_mentions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic_id INTEGER NOT NULL,
-                stock_code TEXT NOT NULL,
-                stock_name TEXT NOT NULL,
-                mention_date TEXT NOT NULL,
-                mention_time TEXT NOT NULL,
-                context_snippet TEXT,
-                sentiment TEXT DEFAULT 'neutral',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (topic_id) REFERENCES topics (topic_id)
-            )
-        ''')
+        with StockAnalyzer._init_lock:
+            conn = sqlite3.connect(self.topics_db_path, check_same_thread=False, timeout=30)
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA busy_timeout=30000')
+            cursor = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stock_price_cache (
-                stock_code TEXT NOT NULL,
-                trade_date TEXT NOT NULL,
-                open REAL,
-                close REAL,
-                high REAL,
-                low REAL,
-                change_pct REAL,
-                volume REAL,
-                PRIMARY KEY (stock_code, trade_date)
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stock_mentions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,
+                    stock_code TEXT NOT NULL,
+                    stock_name TEXT NOT NULL,
+                    mention_date TEXT NOT NULL,
+                    mention_time TEXT NOT NULL,
+                    context_snippet TEXT,
+                    sentiment TEXT DEFAULT 'neutral',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (topic_id) REFERENCES topics (topic_id)
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS mention_performance (
-                mention_id INTEGER PRIMARY KEY,
-                stock_code TEXT NOT NULL,
-                mention_date TEXT NOT NULL,
-                price_at_mention REAL,
-                return_1d REAL,
-                return_3d REAL,
-                return_5d REAL,
-                return_10d REAL,
-                return_20d REAL,
-                return_60d REAL,
-                return_120d REAL,
-                return_250d REAL,
-                excess_return_1d REAL,
-                excess_return_3d REAL,
-                excess_return_5d REAL,
-                excess_return_10d REAL,
-                excess_return_20d REAL,
-                excess_return_60d REAL,
-                excess_return_120d REAL,
-                excess_return_250d REAL,
-                max_return REAL,
-                max_drawdown REAL,
-                freeze_level INTEGER DEFAULT 0,
-                FOREIGN KEY (mention_id) REFERENCES stock_mentions(id)
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stock_price_cache (
+                    stock_code TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    open REAL,
+                    close REAL,
+                    high REAL,
+                    low REAL,
+                    change_pct REAL,
+                    volume REAL,
+                    PRIMARY KEY (stock_code, trade_date)
+                )
+            ''')
 
-        # 兼容旧表：添加新列（如果不存在）
-        for col in ['return_60d', 'return_120d', 'return_250d',
-                     'excess_return_60d', 'excess_return_120d', 'excess_return_250d',
-                     'freeze_level']:
-            try:
-                cursor.execute(f'ALTER TABLE mention_performance ADD COLUMN {col} REAL')
-            except Exception:
-                pass  # 列已存在
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS mention_performance (
+                    mention_id INTEGER PRIMARY KEY,
+                    stock_code TEXT NOT NULL,
+                    mention_date TEXT NOT NULL,
+                    price_at_mention REAL,
+                    return_1d REAL,
+                    return_3d REAL,
+                    return_5d REAL,
+                    return_10d REAL,
+                    return_20d REAL,
+                    return_60d REAL,
+                    return_120d REAL,
+                    return_250d REAL,
+                    excess_return_1d REAL,
+                    excess_return_3d REAL,
+                    excess_return_5d REAL,
+                    excess_return_10d REAL,
+                    excess_return_20d REAL,
+                    excess_return_60d REAL,
+                    excess_return_120d REAL,
+                    excess_return_250d REAL,
+                    max_return REAL,
+                    max_drawdown REAL,
+                    freeze_level INTEGER DEFAULT 0,
+                    FOREIGN KEY (mention_id) REFERENCES stock_mentions(id)
+                )
+            ''')
 
-        # 创建索引
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_stock_code ON stock_mentions(stock_code)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_mention_date ON stock_mentions(mention_date)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_topic_id ON stock_mentions(topic_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_stock_code ON mention_performance(stock_code)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_mention_date ON mention_performance(mention_date)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_spc_date ON stock_price_cache(trade_date)')
+            # 兼容旧表：添加新列（如果不存在）
+            for col in ['return_60d', 'return_120d', 'return_250d',
+                        'excess_return_60d', 'excess_return_120d', 'excess_return_250d',
+                        'freeze_level']:
+                try:
+                    cursor.execute(f'ALTER TABLE mention_performance ADD COLUMN {col} REAL')
+                except Exception:
+                    pass  # 列已存在
 
-        conn.commit()
-        conn.close()
+            # 创建索引
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_stock_code ON stock_mentions(stock_code)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_mention_date ON stock_mentions(mention_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_topic_id ON stock_mentions(topic_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_stock_code ON mention_performance(stock_code)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_mention_date ON mention_performance(mention_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_spc_date ON stock_price_cache(trade_date)')
+
+            conn.commit()
+            conn.close()
+            StockAnalyzer._initialized_dbs.add(db_key)
 
     # ========== 股票字典构建 ==========
 
@@ -429,9 +444,13 @@ class StockAnalyzer:
             ctx_end = min(len(clean_text), end_pos + 51)
             context = clean_text[ctx_start:ctx_end].strip()
 
+            # Use full stock name from dictionary instead of matched alias text
+            full_name = self._stock_dict.get(code, name)
+            if is_excluded_stock(code, full_name):
+                continue
             results.append({
                 'code': code,
-                'name': name,
+                'name': full_name,
                 'position': start_pos,
                 'context': context
             })
@@ -642,7 +661,7 @@ class StockAnalyzer:
 
     # ========== 事件表现计算 ==========
 
-    def _calc_mention_performance(self, mention_id: int, stock_code: str, mention_date: str):
+    def _calc_mention_performance(self, mention_id: int, stock_code: str, mention_date: str) -> Tuple[bool, str]:
         """
         计算一次提及事件的后续表现
         T+1, T+3, T+5, T+10, T+20, T+60, T+120, T+250 收益率 & 超额收益率
@@ -661,7 +680,7 @@ class StockAnalyzer:
         # 根据 freeze_level 确定需要计算的周期
         # 0: 所有都需要, 1: T+60/120/250, 2: T+120/250, 3: 全部冻结
         if current_freeze >= 3:
-            return  # 全部冻结，跳过
+            return False, "freeze_level 已冻结"
 
         freeze_thresholds = {1: 20, 2: 60, 3: 120}
         periods_to_calc = [d for d in ALL_PERIODS if d > freeze_thresholds.get(current_freeze, 0)]
@@ -676,7 +695,7 @@ class StockAnalyzer:
 
         prices = self.fetch_price_range(stock_code, start, end)
         if not prices:
-            return
+            return False, "无可用行情数据"
 
         # 找到提及日或之后最近的交易日作为基准
         base_price = None
@@ -688,7 +707,7 @@ class StockAnalyzer:
                 break
 
         if base_price is None or base_price == 0:
-            return
+            return False, "未找到提及日及之后交易日价格"
 
         # 获取沪深300 对应期间数据
         index_prices = self._fetch_index_price(start, end)
@@ -805,6 +824,7 @@ class StockAnalyzer:
             ))
         conn.commit()
         conn.close()
+        return True, "ok"
 
     # ========== 全量扫描 ==========
 
@@ -904,17 +924,28 @@ class StockAnalyzer:
                 'performance_calculated': 0
             }
 
-        for j, (mention_id, stock_code, mention_date) in enumerate(pending):
-            try:
-                self._calc_mention_performance(mention_id, stock_code, mention_date)
-            except Exception as e:
-                log_warning(f"计算 {stock_code} 表现失败: {e}")
+        # 按股票分组：同一股票的多次提及共享行情缓存，减少 API 调用
+        from collections import defaultdict
+        pending_by_stock = defaultdict(list)
+        for mid, code, date in pending:
+            pending_by_stock[code].append((mid, date))
 
-            if (j + 1) % 20 == 0:
-                self.log(f"📈 已计算 {j+1}/{total_pending} 条提及的后续表现")
+        done_count = 0
+        total_stocks_to_calc = len(pending_by_stock)
+        for stock_idx, (stock_code, items) in enumerate(pending_by_stock.items()):
+            for mid, mention_date in items:
+                try:
+                    self._calc_mention_performance(mid, stock_code, mention_date)
+                except Exception as e:
+                    log_warning(f"计算 {stock_code} 表现失败: {e}")
+                done_count += 1
 
-            # 控制 API 请求频率
-            time.sleep(0.3)
+            if (stock_idx + 1) % 5 == 0 or done_count == total_pending:
+                self.log(f"📈 已计算 {done_count}/{total_pending} 条提及 ({stock_idx+1}/{total_stocks_to_calc} 只股票)")
+
+            # 仅在切换股票时 sleep，同一股票的提及复用行情缓存无需等待
+            if stock_idx < total_stocks_to_calc - 1:
+                time.sleep(0.2)
 
         self.log(f"✅ 全部完成！共处理 {total_pending} 条提及表现计算")
 
@@ -1038,15 +1069,20 @@ class StockAnalyzer:
         self.log(f"📈 收益计算：{total_new} 条新提及 + {total_update} 条待更新")
 
         processed = 0
+        skipped = 0
         errors = 0
         total = len(all_pending)
         
         for i, (mention_id, stock_code, mention_date) in enumerate(all_pending, 1):
             status_msg = ""
             try:
-                self._calc_mention_performance(mention_id, stock_code, mention_date)
-                processed += 1
-                status_msg = f"已保存 {stock_code} ({mention_date})"
+                written, reason = self._calc_mention_performance(mention_id, stock_code, mention_date)
+                if written:
+                    processed += 1
+                    status_msg = f"已保存 {stock_code} ({mention_date})"
+                else:
+                    skipped += 1
+                    status_msg = f"跳过 {stock_code} ({mention_date})：{reason}"
             except Exception as e:
                 log_warning(f"计算 {stock_code} 表现失败: {e}")
                 errors += 1
@@ -1058,17 +1094,59 @@ class StockAnalyzer:
             
             # Internal log - keep it periodic
             if i % 20 == 0 or i == total:
-                self.log(f"📈 收益计算中: {i}/{total} (错误: {errors})")
+                self.log(f"📈 收益计算中: {i}/{total} (成功: {processed}, 跳过: {skipped}, 错误: {errors})")
 
             time.sleep(0.3)
 
-        self.log(f"✅ 收益计算完成：处理 {processed} 条，失败 {errors} 条")
+        self.log(f"✅ 收益计算完成：成功 {processed} 条，跳过 {skipped} 条，失败 {errors} 条")
 
         return {
             'new_calculated': total_new,
             'updated': total_update,
             'processed': processed,
+            'skipped': skipped,
             'errors': errors
+        }
+
+    def _get_analysis_backlog_stats(self, calc_window_days: int = 365) -> Dict[str, Any]:
+        """
+        读取分析前置统计：提及总量、待计算量、是否建议先做提取。
+        仅做本地 SQL 查询，不触发网络请求。
+        """
+        since_date = (datetime.now() - timedelta(days=calc_window_days)).strftime('%Y-%m-%d')
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT COUNT(*) FROM stock_mentions')
+        mentions_total = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute('''
+            SELECT COUNT(*)
+            FROM stock_mentions sm
+            LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
+            WHERE mp.mention_id IS NULL
+              AND sm.mention_date >= ?
+        ''', (since_date,))
+        pending_new = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute('''
+            SELECT COUNT(*)
+            FROM stock_mentions sm
+            JOIN mention_performance mp ON sm.id = mp.mention_id
+            WHERE (mp.freeze_level IS NULL OR mp.freeze_level < 3)
+              AND sm.mention_date >= ?
+        ''', (since_date,))
+        pending_update = int((cursor.fetchone() or [0])[0] or 0)
+        conn.close()
+
+        pending_total = pending_new + pending_update
+        needs_extract = (mentions_total == 0) or (mentions_total > 0 and pending_total == 0)
+        return {
+            'mentions_total': mentions_total,
+            'pending_total': pending_total,
+            'pending_new': pending_new,
+            'pending_update': pending_update,
+            'needs_extract': needs_extract,
         }
 
     # ========== 查询接口 ==========
@@ -1243,23 +1321,81 @@ class StockAnalyzer:
         }
 
     def get_stock_events(self, stock_code: str) -> Dict[str, Any]:
-        """获取某只股票的全部提及事件 + 每次表现"""
+        """获取某只股票的全部提及事件 + 每次表现 + 完整话题文本 + 关联股票"""
         conn = self._get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
+        # 查询提及 + 表现 + 话题全文
         cursor.execute('''
-            SELECT sm.context_snippet as context, sm.*, mp.price_at_mention,
+            SELECT sm.id, sm.topic_id, sm.stock_code, sm.stock_name,
+                   sm.mention_date, sm.mention_time, sm.context_snippet as context,
+                   mp.price_at_mention,
                    mp.return_1d, mp.return_3d, mp.return_5d, mp.return_10d, mp.return_20d,
                    mp.excess_return_5d, mp.excess_return_10d,
-                   mp.max_return, mp.max_drawdown
+                   mp.max_return, mp.max_drawdown,
+                   tk.text as full_text
             FROM stock_mentions sm
             LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
+            LEFT JOIN talks tk ON sm.topic_id = tk.topic_id
             WHERE sm.stock_code = ?
             ORDER BY sm.mention_time DESC
         ''', (stock_code,))
 
-        events = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        topic_ids = list(set(row['topic_id'] for row in rows if row['topic_id']))
+
+        # 批量查询每个 topic 下的其他关联股票
+        stocks_by_topic: Dict[int, List[Dict[str, str]]] = {}
+        if topic_ids:
+            placeholders = ','.join('?' * len(topic_ids))
+            cursor.execute(f'''
+                SELECT topic_id, stock_code, stock_name
+                FROM stock_mentions
+                WHERE topic_id IN ({placeholders})
+                ORDER BY mention_time DESC
+            ''', topic_ids)
+            seen: Dict[int, set] = {}
+            for r in cursor.fetchall():
+                tid = r['topic_id']
+                code = r['stock_code']
+                if tid not in stocks_by_topic:
+                    stocks_by_topic[tid] = []
+                    seen[tid] = set()
+                if code not in seen[tid]:
+                    seen[tid].add(code)
+                    stocks_by_topic[tid].append({
+                        'stock_code': code,
+                        'stock_name': r['stock_name'],
+                    })
+
+        events = []
+        for row in rows:
+            full_text = row['full_text'] or ''
+            text_snippet = full_text[:500] + ('...' if len(full_text) > 500 else '')
+            topic_id = row['topic_id']
+            event = {
+                'mention_id': row['id'],
+                'topic_id': str(topic_id) if topic_id is not None else None,
+                'group_id': self.group_id,
+                'group_name': '',
+                'stock_code': row['stock_code'],
+                'stock_name': row['stock_name'],
+                'mention_date': row['mention_date'],
+                'mention_time': row['mention_time'],
+                'context': row['context'],
+                'full_text': full_text,
+                'text_snippet': text_snippet,
+                'stocks': stocks_by_topic.get(topic_id, []),
+                'return_1d': row['return_1d'],
+                'return_3d': row['return_3d'],
+                'return_5d': row['return_5d'],
+                'return_10d': row['return_10d'],
+                'return_20d': row['return_20d'],
+                'max_return': row['max_return'],
+                'max_drawdown': row['max_drawdown'],
+            }
+            events.append(event)
 
         # 统计
         valid_returns = [e['return_5d'] for e in events if e.get('return_5d') is not None]
@@ -1310,21 +1446,90 @@ class StockAnalyzer:
         }
 
     def get_win_rate_ranking(self, min_mentions: int = 2, return_period: str = 'return_5d',
-                             limit: int = 50) -> List[Dict]:
+                             limit: int = 1000, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                             page: int = 1, page_size: int = 20,
+                             sort_by: str = 'win_rate', order: str = 'desc') -> Dict[str, Any]:
         """
-        胜率排行榜：按提及后N日正收益率排序
+        胜率排行榜：按提及后N日正收益率排序（支持时间过滤和分页）
 
         Args:
             min_mentions: 最少被提及次数（过滤噪音）
             return_period: 使用哪个收益率周期
-            limit: 返回数量
+            limit: 返回数量上限
+            start_date: 仅统计该日期及之后的提及 (YYYY-MM-DD)
+            end_date: 仅统计该日期及之前的提及 (YYYY-MM-DD)
+            page: 页码 (1-indexed)
+            page_size: 每页数量
+            sort_by: 排序字段 (win_rate, total_mentions, avg_return)
+            order: 排序方向 (asc, desc)
         """
         valid_periods = ['return_1d', 'return_3d', 'return_5d', 'return_10d', 'return_20d']
         if return_period not in valid_periods:
             return_period = 'return_5d'
+        # 防御式兜底，避免前端传入 <= 0 导致筛选异常
+        min_mentions = max(1, int(min_mentions or 1))
+
+        # 映射超额收益列名: return_5d -> excess_return_5d
+        excess_col = 'excess_' + return_period
+
+        # Build date filter
+        date_filter = ''
+        date_params = []
+        exclude_clause, exclude_params = build_sql_exclusion_clause('sm.stock_code', 'sm.stock_name')
+        if start_date and end_date:
+            date_filter = 'AND sm.mention_date BETWEEN ? AND ?'
+            date_params = [start_date, end_date]
+        elif start_date:
+            date_filter = 'AND sm.mention_date >= ?'
+            date_params = [start_date]
+        elif end_date:
+            date_filter = 'AND sm.mention_date <= ?'
+            date_params = [end_date]
 
         conn = self._get_conn()
         cursor = conn.cursor()
+
+        # Get total count first
+        cursor.execute(f'''
+            SELECT COUNT(*) FROM (
+                SELECT sm.stock_code
+                FROM stock_mentions sm
+                JOIN mention_performance mp ON sm.id = mp.mention_id
+                WHERE mp.{return_period} IS NOT NULL {date_filter} {exclude_clause}
+                GROUP BY sm.stock_code
+                HAVING COUNT(*) >= ?
+            )
+        ''', date_params + exclude_params + [min_mentions])
+        total = cursor.fetchone()[0]
+
+        # 如果用户设置了 limit，则将总数裁剪到 limit，避免翻页请求超出范围
+        total_cap = max(0, min(total, limit)) if limit and limit > 0 else total
+
+        # Paginated query
+        offset = (page - 1) * page_size
+        if offset >= total_cap:
+            conn.close()
+            return {
+                'data': [],
+                'total': total_cap,
+                'page': page,
+                'page_size': page_size
+            }
+
+        actual_limit = min(page_size, total_cap - offset if total_cap else page_size)
+
+        order_dir = 'ASC' if str(order).lower() == 'asc' else 'DESC'
+        
+        if sort_by == 'total_mentions':
+            order_clause = f"COUNT(*) {order_dir}, CAST(SUM(CASE WHEN mp.{return_period} > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) DESC"
+        elif sort_by == 'avg_return':
+            order_clause = f"AVG(mp.{return_period}) {order_dir}, CAST(SUM(CASE WHEN mp.{return_period} > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) DESC"
+        elif sort_by == 'avg_benchmark_return':
+            order_clause = f"AVG(mp.{return_period} - mp.{excess_col}) {order_dir}, AVG(mp.{return_period}) DESC"
+        elif sort_by == 'latest_mention':
+            order_clause = f"MAX(sm.mention_date) {order_dir}, COUNT(*) DESC"
+        else: # default to win_rate
+            order_clause = f"CAST(SUM(CASE WHEN mp.{return_period} > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) {order_dir}, AVG(mp.{return_period}) {order_dir}"
 
         cursor.execute(f'''
             SELECT
@@ -1333,94 +1538,219 @@ class StockAnalyzer:
                 COUNT(*) as total_mentions,
                 SUM(CASE WHEN mp.{return_period} > 0 THEN 1 ELSE 0 END) as win_count,
                 ROUND(AVG(mp.{return_period}), 2) as avg_return,
+                ROUND(AVG(mp.{return_period} - mp.{excess_col}), 2) as avg_benchmark_return,
                 ROUND(MAX(mp.max_return), 2) as best_max_return,
                 ROUND(AVG(mp.max_return), 2) as avg_max_return,
                 ROUND(MIN(mp.max_drawdown), 2) as worst_drawdown,
                 MAX(sm.mention_date) as latest_mention
             FROM stock_mentions sm
             JOIN mention_performance mp ON sm.id = mp.mention_id
-            WHERE mp.{return_period} IS NOT NULL
+            WHERE mp.{return_period} IS NOT NULL {date_filter} {exclude_clause}
             GROUP BY sm.stock_code
             HAVING COUNT(*) >= ?
-            ORDER BY
-                CAST(SUM(CASE WHEN mp.{return_period} > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) DESC,
-                AVG(mp.{return_period}) DESC
-            LIMIT ?
-        ''', (min_mentions, limit))
+            ORDER BY {order_clause}
+            LIMIT ? OFFSET ?
+        ''', date_params + exclude_params + [min_mentions, actual_limit, offset])
+
+        # Build stock dict for name resolution
+        self._build_stock_dictionary()
 
         results = []
         for row in cursor.fetchall():
-            total = row[2]
+            total_m = row[2]
             wins = row[3]
+            code = row[0]
             results.append({
-                'stock_code': row[0],
-                'stock_name': row[1],
-                'total_mentions': total,
+                'stock_code': code,
+                'stock_name': self._stock_dict.get(code, row[1]),
+                'total_mentions': total_m,
                 'win_count': wins,
-                'win_rate': round(wins / total * 100, 1) if total > 0 else 0,
+                'win_rate': round(wins / total_m * 100, 1) if total_m > 0 else 0,
                 'avg_return': row[4],
-                'best_max_return': row[5],
-                'avg_max_return': row[6],
-                'worst_drawdown': row[7],
-                'latest_mention': row[8]
+                'avg_benchmark_return': row[5],
+                'best_max_return': row[6],
+                'avg_max_return': row[7],
+                'worst_drawdown': row[8],
+                'latest_mention': row[9]
             })
 
         conn.close()
-        return results
+        return {
+            'data': results,
+            'total': total_cap,
+            'page': page,
+            'page_size': page_size
+        }
 
-    def get_sector_heatmap(self) -> List[Dict]:
-        """板块热度分析"""
+    def get_sector_heatmap(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
+        """板块热度分析（支持时间过滤）
+
+        Args:
+            start_date: 仅统计该日期及之后的帖子 (YYYY-MM-DD)
+            end_date: 仅统计该日期及之前的帖子 (YYYY-MM-DD)
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        # 获取所有帖子文本（带时间）
-        cursor.execute('''
+        # 获取帖子文本（带时间），可选时间过滤（end_date 包含当天）
+        date_clause, date_params = build_topic_time_filter(
+            start_date=start_date,
+            end_date=end_date,
+            column='t.create_time',
+        )
+
+        cursor.execute(f'''
             SELECT tk.text, t.create_time
             FROM topics t
             JOIN talks tk ON t.topic_id = tk.topic_id
             WHERE tk.text IS NOT NULL AND tk.text != ''
-        ''')
+              {date_clause}
+        ''', date_params)
         topics = cursor.fetchall()
         conn.close()
 
-        # 按板块统计
-        sector_stats = {}
-        for sector, keywords in SECTOR_KEYWORDS.items():
-            mentions_by_date = {}
-            total = 0
-            for text, create_time in topics:
-                text_lower = text.lower()
-                if any(kw in text_lower for kw in keywords):
-                    date = create_time[:10] if create_time else ''
-                    if date:
-                        mentions_by_date[date] = mentions_by_date.get(date, 0) + 1
-                        total += 1
+        return aggregate_sector_heat(topics, SECTOR_KEYWORDS)
 
-            if total > 0:
-                sector_stats[sector] = {
-                    'sector': sector,
-                    'total_mentions': total,
-                    'daily_mentions': dict(sorted(mentions_by_date.items())),
-                    'peak_date': max(mentions_by_date, key=mentions_by_date.get) if mentions_by_date else None,
-                    'peak_count': max(mentions_by_date.values()) if mentions_by_date else 0
-                }
+    def get_sector_topics(self, sector: str, start_date: Optional[str] = None,
+                          end_date: Optional[str] = None, page: int = 1,
+                          page_size: int = 20) -> Dict[str, Any]:
+        """获取指定板块的命中话题明细（按时间倒序）"""
+        if sector not in SECTOR_KEYWORDS:
+            raise ValueError(f"未知板块: {sector}")
 
-        return sorted(sector_stats.values(), key=lambda x: x['total_mentions'], reverse=True)
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 20), 100))
+        keywords = [kw.lower() for kw in SECTOR_KEYWORDS[sector]]
 
-    def get_signals(self, lookback_days: int = 7, min_mentions: int = 2) -> List[Dict]:
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        date_clause, date_params = build_topic_time_filter(
+            start_date=start_date,
+            end_date=end_date,
+            column='t.create_time',
+        )
+
+        cursor.execute(f'''
+            SELECT t.topic_id, t.create_time, tk.text
+            FROM topics t
+            JOIN talks tk ON t.topic_id = tk.topic_id
+            WHERE tk.text IS NOT NULL AND tk.text != ''
+              {date_clause}
+            ORDER BY t.create_time DESC
+        ''', date_params)
+        candidates = cursor.fetchall()
+
+        matched_topics: List[Dict[str, Any]] = []
+        for row in candidates:
+            text = row['text'] or ''
+            text_lower = text.lower()
+            matched_keywords = [kw for kw in keywords if kw in text_lower]
+            if not matched_keywords:
+                continue
+
+            matched_topics.append({
+                'topic_id': str(row['topic_id']) if row['topic_id'] is not None else None,
+                'create_time': row['create_time'],
+                'full_text': text,
+                'text_snippet': text[:280] + ('...' if len(text) > 280 else ''),
+                'matched_keywords': matched_keywords,
+            })
+
+        total = len(matched_topics)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        page_items = matched_topics[start_idx:end_idx]
+
+        if not page_items:
+            conn.close()
+            return {
+                'total': total,
+                'page': page,
+                'page_size': page_size,
+                'items': []
+            }
+
+        topic_ids = [item['topic_id'] for item in page_items]
+        placeholders = ','.join('?' * len(topic_ids))
+        exclude_clause, exclude_params = build_sql_exclusion_clause('stock_code', 'stock_name')
+        cursor.execute(f'''
+            SELECT topic_id, stock_code, stock_name
+            FROM stock_mentions
+            WHERE topic_id IN ({placeholders})
+            {exclude_clause}
+            ORDER BY mention_time DESC
+        ''', topic_ids + exclude_params)
+
+        stocks_by_topic: Dict[str, List[Dict[str, str]]] = {}
+        seen_codes: Dict[str, set] = {}
+        for row in cursor.fetchall():
+            topic_id = str(row['topic_id'])
+            if topic_id not in stocks_by_topic:
+                stocks_by_topic[topic_id] = []
+                seen_codes[topic_id] = set()
+
+            code = row['stock_code']
+            if code in seen_codes[topic_id]:
+                continue
+            seen_codes[topic_id].add(code)
+            stocks_by_topic[topic_id].append({
+                'stock_code': code,
+                'stock_name': row['stock_name'],
+            })
+
+        conn.close()
+
+        items = []
+        for item in page_items:
+            tid = str(item['topic_id'])
+            items.append({
+                'topic_id': str(item['topic_id']) if item['topic_id'] is not None else None,
+                'create_time': item['create_time'],
+                'text_snippet': item['text_snippet'],
+                'full_text': item['full_text'],
+                'matched_keywords': item['matched_keywords'],
+                'stocks': stocks_by_topic.get(tid, []),
+            })
+
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'items': items
+        }
+
+    def get_signals(self, lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
         """
         信号雷达：近期高频提及 + 历史胜率高的股票
 
         条件：
-        - 近 lookback_days 天内被提及 >= min_mentions 次
+        - 近 lookback_days 天内被提及 >= min_mentions 次 (或指定 start_date/end_date)
         - 历史提及后5日胜率 >= 50%
         """
-        cutoff_date = (datetime.now(BEIJING_TZ) - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+        if start_date:
+            cutoff_date = start_date
+        else:
+            cutoff_date = (datetime.now(BEIJING_TZ) - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+        # 防御式兜底，避免前端传入 <= 0 导致筛选异常
+        min_mentions = max(1, int(min_mentions or 1))
+
+        date_condition = "sm.mention_date >= ?"
+        params: List[Any] = [cutoff_date]
+        exclude_clause, exclude_params = build_sql_exclusion_clause('sm.stock_code', 'sm.stock_name')
+        
+        if end_date:
+            date_condition += " AND sm.mention_date <= ?"
+            params.append(end_date)
+
+        params.extend(exclude_params)
+        params.append(min_mentions)
 
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 sm.stock_code,
                 sm.stock_name,
@@ -1438,29 +1768,31 @@ class StockAnalyzer:
                  JOIN mention_performance mp4 ON sm4.id = mp4.mention_id
                  WHERE sm4.stock_code = sm.stock_code
                 ) as historical_avg_return,
-                MAX(sm.mention_date) as latest_mention,
-                GROUP_CONCAT(sm.context_snippet, ' | ') as recent_contexts
+                MAX(sm.mention_date) as latest_mention
             FROM stock_mentions sm
-            WHERE sm.mention_date >= ?
+            WHERE {date_condition} {exclude_clause}
             GROUP BY sm.stock_code
             HAVING COUNT(*) >= ?
             ORDER BY COUNT(*) DESC
-        ''', (cutoff_date, min_mentions))
+        ''', params)
+
+        # Build stock dict for name resolution
+        self._build_stock_dictionary()
 
         signals = []
         for row in cursor.fetchall():
             hist_total = row[4]
             hist_wins = row[3]
             win_rate = round(hist_wins / hist_total * 100, 1) if hist_total > 0 else None
+            code = row[0]
 
             signals.append({
-                'stock_code': row[0],
-                'stock_name': row[1],
+                'stock_code': code,
+                'stock_name': self._stock_dict.get(code, row[1]),
                 'recent_mentions': row[2],
                 'historical_win_rate': win_rate,
                 'historical_avg_return': row[5],
-                'latest_mention': row[6],
-                'recent_contexts': row[7][:500] if row[7] else ''
+                'latest_mention': row[6]
             })
 
         conn.close()
@@ -1491,11 +1823,13 @@ class StockAnalyzer:
         cursor.execute('SELECT COUNT(*) FROM mention_performance')
         stats['performance_calculated'] = cursor.fetchone()[0]
 
-        # 整体胜率
+        # 整体胜率 + 平均收益
         cursor.execute('''
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN return_5d > 0 THEN 1 ELSE 0 END) as wins
+                SUM(CASE WHEN return_5d > 0 THEN 1 ELSE 0 END) as wins,
+                ROUND(AVG(return_5d), 2) as avg_return_5d,
+                ROUND(AVG(excess_return_5d), 2) as avg_excess_5d
             FROM mention_performance
             WHERE return_5d IS NOT NULL
         ''')
@@ -1503,8 +1837,23 @@ class StockAnalyzer:
         if row and row[0] > 0:
             stats['overall_win_rate_5d'] = round(row[1] / row[0] * 100, 1)
             stats['total_with_returns'] = row[0]
+            stats['avg_return_5d'] = row[2]
+            stats['avg_excess_5d'] = row[3]
         else:
             stats['overall_win_rate_5d'] = None
+            stats['avg_return_5d'] = None
+            stats['avg_excess_5d'] = None
+
+        # 最近7天新增提及数
+        cursor.execute('''
+            SELECT COUNT(*) FROM stock_mentions
+            WHERE mention_date >= date('now', '-7 days')
+        ''')
+        stats['recent_7d_mentions'] = cursor.fetchone()[0]
+
+        # 最近提及时间
+        cursor.execute('SELECT MAX(mention_date) FROM stock_mentions')
+        stats['latest_mention_date'] = cursor.fetchone()[0]
 
         # 最被提及的股票 Top 10
         cursor.execute('''

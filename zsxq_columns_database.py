@@ -329,7 +329,7 @@ class ZSXQColumnsDatabase:
         topics = []
         for row in self.cursor.fetchall():
             topics.append({
-                'topic_id': row[0],
+                'topic_id': str(row[0]) if row[0] is not None else None,
                 'column_id': row[1],
                 'group_id': row[2],
                 'title': row[3],
@@ -578,7 +578,7 @@ class ZSXQColumnsDatabase:
             return None
         
         result = {
-            'topic_id': row[0],
+            'topic_id': str(row[0]) if row[0] is not None else None,
             'group_id': row[1],
             'type': row[2],
             'title': row[3],
@@ -757,7 +757,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             videos.append({
                 'video_id': row[0],
-                'topic_id': row[1],
+                'topic_id': str(row[1]) if row[1] is not None else None,
                 'size': row[2],
                 'duration': row[3],
                 'cover_url': row[4],
@@ -906,7 +906,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             files.append({
                 'file_id': row[0],
-                'topic_id': row[1],
+                'topic_id': str(row[1]) if row[1] is not None else None,
                 'name': row[2],
                 'size': row[3],
                 'hash': row[4],
@@ -945,7 +945,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             images.append({
                 'image_id': row[0],
-                'topic_id': row[1],
+                'topic_id': str(row[1]) if row[1] is not None else None,
                 'original_url': row[2],
                 'group_id': row[3]
             })

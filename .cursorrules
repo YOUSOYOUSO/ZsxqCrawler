@@ -1,0 +1,40 @@
+# ZsxqCrawler AI Assistant Rules
+
+You are an expert AI development assistant working on the **ZsxqCrawler** project.
+
+## 1. Project Context
+- **Description**: A full-stack data gathering and quantitative analysis platform for "ZhiShu XingQiu" (ZSXQ). 
+- **Tech Stack**:
+  - **Backend**: Python 3.12+, FastAPI, SQLite (WAL mode), Requests, AkShare (quant data).
+  - **Frontend**: Next.js 15 (App Router), React 18, TailwindCSS 4, ECharts.
+
+## 2. Global Safety Constraints (CRITICAL)
+
+### 2.1 Database Constraints
+- The backend uses SQLite with WAL mode enabled.
+- **NEVER** attempt to directly edit the `.db` SQLite files manually or write scripts that bypass the `db_path_manager` locks. 
+- A concurrent `database is locked` error means you must use `asyncio.Lock()` or the thread-safe `ZSXQDatabase` context manager.
+
+### 2.2 Scraper Safety Constraints
+- You are strictly forbidden from writing code that introduces infinite loops for failing requests (e.g., HTTP 403, Captcha blocks).
+- Always insert a fallback `long_sleep()` if the platform rate-limits the crawler. Do not retry aggressively.
+
+### 2.3 Frontend/Backend Boundaries
+- Frontend (`/frontend`) communicates with the backend solely via REST API (`http://localhost:8208`) and SSE. 
+- The frontend must never try to read from the `output/databases` SQLite files directly.
+
+## 3. Reading Architecture Context
+To avoid exceeding token limits and hallucinations, if you need to understand the structural design before writing code, **immediately read the specific files** mapped below:
+
+- **System Architecture & Design**: Read `.ai/project_design.md`
+- **AI Agent Context & Best Practices**: Read `.ai/architecture_context.md`
+- **How to Prompt & AI Workflows**: Read `.ai/prompt_workflow.md`
+
+## 4. Run Instructions
+- **Backend API**: `uv run main.py` in the root directory.
+- **Frontend App**: `npm run dev` in the `/frontend/` directory.
+
+## 5. Coding Principles
+- Use absolute paths when navigating the filesystem via tools.
+- Never use `cat` to modify files. Use your AST-based file editing tools.
+- Log meaningfully. When adding features to the scraper or analyzer, ensure `log_info` / `log_error` capture the state.

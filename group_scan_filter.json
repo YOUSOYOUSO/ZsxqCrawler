@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-21T10:02:35.872012+08:00",
+  "default_action": "exclude",
+  "whitelist_group_ids": [
+    "88885251482412",
+    "51122424541244"
+  ],
+  "blacklist_group_ids": [
+    "48411118851818",
+    "48418884588288"
+  ]
+}
