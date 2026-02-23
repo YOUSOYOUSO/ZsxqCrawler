@@ -4,6 +4,11 @@
 
 This document provides a quick navigation map for humans and AI agents.
 
+## Service Extraction Progress
+
+- `api/services/global_analyze_service.py`: owns global performance analyze flow
+- `api/services/global_file_task_service.py`: owns global file collect/download flows
+
 ## Top-Level Entry Files (compat shims)
 
 - `main.py`: FastAPI app entry + compatibility glue

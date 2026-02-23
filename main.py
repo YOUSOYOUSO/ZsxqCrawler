@@ -5357,87 +5357,16 @@ def api_global_files_collect(request: GlobalFileCollectRequest, background_tasks
     task_stop_flags[task_id] = False
 
     def _global_collect_task(task_id: str):
-        try:
-            update_task(task_id, "running", "准备开始全区文件收集...")
-            add_task_log(task_id, f"🚀 开始全区文件列表收集")
-            
-            from db_path_manager import get_db_path_manager
-            from zsxq_file_downloader import ZSXQFileDownloader
-            
-            manager = get_db_path_manager()
-            all_groups = manager.list_all_groups()
-            filtered = _apply_group_scan_filter_for_tasks(all_groups)
-            groups = filtered["included_groups"]
-            excluded_groups = filtered["excluded_groups"]
-            reason_counts = filtered["reason_counts"]
-            default_action = filtered["default_action"]
+        from api.services.global_file_task_service import GlobalFileTaskService
 
-            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
-            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
-            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
-            if reason_counts:
-                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
-            if excluded_groups:
-                preview = "，".join(
-                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
-                    for g in excluded_groups[:20]
-                )
-                suffix = " ..." if len(excluded_groups) > 20 else ""
-                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
-
-            if not groups:
-                update_task(task_id, "completed", "全区收集完成: 过滤后无可扫描群组")
-                return
-
-            processed_groups = 0
-            
-            for i, group in enumerate(groups, 1):
-                if is_task_stopped(task_id):
-                    add_task_log(task_id, "🛑 任务已被用户停止")
-                    break
-                
-                group_id = str(group['group_id'])
-                add_task_log(task_id, "")
-                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在收集群组 {group_id} 的文件列表...")
-                
-                try:
-                    cookie = get_cookie_for_group(group_id)
-                    db_path = manager.get_files_db_path(group_id)
-                    
-                    downloader = ZSXQFileDownloader(cookie, group_id, db_path)
-                    downloader.log_callback = lambda msg: add_task_log(task_id, f"   {msg}")
-                    downloader.stop_check_func = lambda: is_task_stopped(task_id)
-                    
-                    global file_downloader_instances
-                    file_downloader_instances[task_id] = downloader
-                    
-                    res = downloader.collect_incremental_files()
-                    
-                    add_task_log(task_id, f"   ✅ 群组 {group_id} 文件收集完成! 新增待下载: {res.get('new_files',0) if isinstance(res, dict) else res}")
-                    processed_groups += 1
-                        
-                except Exception as ge:
-                    add_task_log(task_id, f"   ❌ 群组 {group_id} 收集异常: {ge}")
-                finally:
-                    if task_id in file_downloader_instances:
-                        del file_downloader_instances[task_id]
-                
-                if i < len(groups) and not is_task_stopped(task_id):
-                    sleep_time = random.uniform(1.0, 3.0)
-                    add_task_log(task_id, f"⏳ 等待 {sleep_time:.1f} 秒...")
-                    time.sleep(sleep_time)
-
-            if is_task_stopped(task_id):
-                update_task(task_id, "cancelled", "全区收集已停止")
-            else:
-                add_task_log(task_id, "")
-                add_task_log(task_id, "=" * 50)
-                add_task_log(task_id, f"🎉 全区文件列表收集完成！共处理 {processed_groups}/{len(groups)} 个群组")
-                update_task(task_id, "completed", f"全区收集完成: {processed_groups} 个群组")
-
-        except Exception as e:
-            add_task_log(task_id, f"❌ 全区收集异常: {e}")
-            update_task(task_id, "failed", f"全区收集失败: {e}")
+        GlobalFileTaskService().run_collect(
+            task_id=task_id,
+            add_task_log=add_task_log,
+            update_task=update_task,
+            is_task_stopped=is_task_stopped,
+            get_cookie_for_group=get_cookie_for_group,
+            file_downloader_instances=file_downloader_instances,
+        )
 
     background_tasks.add_task(_global_collect_task, task_id)
     return {"task_id": task_id, "message": "全区收集任务已启动"}
@@ -5462,92 +5391,17 @@ def api_global_files_download(request: GlobalFileDownloadRequest, background_tas
     task_stop_flags[task_id] = False
 
     def _global_download_task(task_id: str):
-        try:
-            update_task(task_id, "running", "准备开始全区下载...")
-            add_task_log(task_id, f"🚀 开始全区文件下载")
-            
-            from db_path_manager import get_db_path_manager
-            manager = get_db_path_manager()
-            all_groups = manager.list_all_groups()
-            filtered = _apply_group_scan_filter_for_tasks(all_groups)
-            groups = filtered["included_groups"]
-            excluded_groups = filtered["excluded_groups"]
-            reason_counts = filtered["reason_counts"]
-            default_action = filtered["default_action"]
+        from api.services.global_file_task_service import GlobalFileTaskService
 
-            add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
-            add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
-            add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
-            if reason_counts:
-                add_task_log(task_id, f"📌 命中统计: {reason_counts}")
-            if excluded_groups:
-                preview = "，".join(
-                    f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
-                    for g in excluded_groups[:20]
-                )
-                suffix = " ..." if len(excluded_groups) > 20 else ""
-                add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
-
-            if not groups:
-                update_task(task_id, "completed", "全区下载完成: 过滤后无可扫描群组")
-                return
-
-            processed_groups = 0
-            
-            for i, group in enumerate(groups, 1):
-                if is_task_stopped(task_id):
-                    add_task_log(task_id, "🛑 任务已被用户停止")
-                    break
-                
-                group_id = str(group['group_id'])
-                add_task_log(task_id, "")
-                add_task_log(task_id, f"👉 [{i}/{len(groups)}] 正在下载群组 {group_id} 的文件...")
-                
-                try:
-                    from zsxq_file_downloader import ZSXQFileDownloader
-                    cookie = get_cookie_for_group(group_id)
-                    db_path = manager.get_files_db_path(group_id)
-                    
-                    downloader = ZSXQFileDownloader(
-                        cookie=cookie,
-                        group_id=group_id,
-                        db_path=db_path,
-                        download_interval=request.download_interval,
-                        long_sleep_interval=request.long_sleep_interval,
-                        files_per_batch=request.files_per_batch,
-                        download_interval_min=request.download_interval_min,
-                        download_interval_max=request.download_interval_max,
-                        long_sleep_interval_min=request.long_sleep_interval_min,
-                        long_sleep_interval_max=request.long_sleep_interval_max
-                    )
-                    downloader.log_callback = lambda msg: add_task_log(task_id, f"   {msg}")
-                    downloader.stop_check_func = lambda: is_task_stopped(task_id)
-                    
-                    global file_downloader_instances
-                    file_downloader_instances[task_id] = downloader
-                    
-                    res = downloader.download_files(request.max_files, sort_by=request.sort_by)
-                    
-                    dl_success = res.get('downloaded', 0) if isinstance(res, dict) else res
-                    add_task_log(task_id, f"   ✅ 群组 {group_id} 下载完成! 成功: {dl_success}")
-                    processed_groups += 1
-                except Exception as ge:
-                    add_task_log(task_id, f"   ❌ 群组 {group_id} 下载异常: {ge}")
-                finally:
-                    if task_id in file_downloader_instances:
-                        del file_downloader_instances[task_id]
-                
-            if is_task_stopped(task_id):
-                update_task(task_id, "cancelled", "全区下载已停止")
-            else:
-                add_task_log(task_id, "")
-                add_task_log(task_id, "=" * 50)
-                add_task_log(task_id, f"🎉 全区文件下载完成！共处理 {processed_groups}/{len(groups)} 个群组")
-                update_task(task_id, "completed", f"全区下载完成: {processed_groups} 个群组")
-
-        except Exception as e:
-            add_task_log(task_id, f"❌ 全区下载异常: {e}")
-            update_task(task_id, "failed", f"全区下载失败: {e}")
+        GlobalFileTaskService().run_download(
+            task_id=task_id,
+            request=request,
+            add_task_log=add_task_log,
+            update_task=update_task,
+            is_task_stopped=is_task_stopped,
+            get_cookie_for_group=get_cookie_for_group,
+            file_downloader_instances=file_downloader_instances,
+        )
 
     background_tasks.add_task(_global_download_task, task_id)
     return {"task_id": task_id, "message": "全区下载任务已启动"}
