@@ -69,11 +69,12 @@ class StockAnalyzer:
     # 进程级表初始化缓存，避免多个实例重复建表/漏建表
     _init_lock = threading.RLock()
     _initialized_dbs: set = set()
+    # mini_racer/V8 在并发初始化下存在崩溃风险，AkShare 调用统一串行化
+    _akshare_lock = threading.Lock()
 
     # 本地缓存时效（秒），默认12小时
     DICT_CACHE_TTL_SECONDS = int(os.environ.get("STOCK_DICT_CACHE_TTL_SECONDS", "43200"))
     DICT_CACHE_FILE = "stock_dict_cache.json"
-
     def __init__(self, group_id: str, log_callback=None):
         self.group_id = group_id
         self.log_callback = log_callback
@@ -360,27 +361,8 @@ class StockAnalyzer:
         """从 AkShare 获取全量股票字典，并输出构建进度"""
         self.log("从AkShare获取清单")
         try:
-            holder: Dict[str, Any] = {"df": None, "err": None}
-
-            def _fetch():
-                try:
-                    holder["df"] = ak.stock_zh_a_spot_em()
-                except Exception as e:
-                    holder["err"] = e
-
-            t = threading.Thread(target=_fetch, daemon=True)
-            t.start()
-            waited = 0
-            while t.is_alive():
-                t.join(timeout=5)
-                waited += 5
-                if t.is_alive():
-                    self.log(f"从AkShare获取清单中...已等待 {waited} 秒")
-
-            if holder["err"] is not None:
-                raise holder["err"]
-
-            df = holder["df"]
+            with StockAnalyzer._akshare_lock:
+                df = ak.stock_zh_a_spot_em()
             total_rows = len(df)
             self.log(f"字典处理进度 0/{total_rows}")
 
@@ -525,13 +507,14 @@ class StockAnalyzer:
         new_records = []
         if need_fetch:
             try:
-                df = ak.stock_zh_a_hist(
-                    symbol=pure_code,
-                    period="daily",
-                    start_date=start_date.replace('-', ''),
-                    end_date=end_date.replace('-', ''),
-                    adjust="qfq"
-                )
+                with StockAnalyzer._akshare_lock:
+                    df = ak.stock_zh_a_hist(
+                        symbol=pure_code,
+                        period="daily",
+                        start_date=start_date.replace('-', ''),
+                        end_date=end_date.replace('-', ''),
+                        adjust="qfq"
+                    )
 
                 if df is not None and not df.empty:
                     for _, row in df.iterrows():
@@ -618,7 +601,8 @@ class StockAnalyzer:
 
         # 阶段2：网络请求（不持有数据库连接）
         try:
-            df = ak.stock_zh_index_daily(symbol="sh000300")
+            with StockAnalyzer._akshare_lock:
+                df = ak.stock_zh_index_daily(symbol="sh000300")
             if df is None or df.empty:
                 return cached_map
 
@@ -661,43 +645,44 @@ class StockAnalyzer:
 
     # ========== 事件表现计算 ==========
 
-    def _calc_mention_performance(self, mention_id: int, stock_code: str, mention_date: str) -> Tuple[bool, str]:
+    def _compute_performance_payload(
+        self,
+        stock_code: str,
+        mention_date: str,
+        current_freeze: int,
+        price_cache: Optional[Dict[Tuple[str, str, str], List[Dict[str, Any]]]] = None,
+        index_cache: Optional[Dict[Tuple[str, str], Dict[str, float]]] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
-        计算一次提及事件的后续表现
-        T+1, T+3, T+5, T+10, T+20, T+60, T+120, T+250 收益率 & 超额收益率
-        支持渐进式冻结：已冻结的字段不再重新拉取行情
+        计算一次提及事件的收益 payload，不写入数据库。
+        返回: (是否成功, 原因, payload)
         """
         ALL_PERIODS = [1, 3, 5, 10, 20, 60, 120, 250]
 
-        # 检查当前 freeze_level，决定需要计算哪些周期
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute('SELECT freeze_level FROM mention_performance WHERE mention_id = ?', (mention_id,))
-        row = cursor.fetchone()
-        current_freeze = row[0] if row and row[0] else 0
-        conn.close()
-
-        # 根据 freeze_level 确定需要计算的周期
-        # 0: 所有都需要, 1: T+60/120/250, 2: T+120/250, 3: 全部冻结
         if current_freeze >= 3:
-            return False, "freeze_level 已冻结"
+            return False, "freeze_level 已冻结", None
 
         freeze_thresholds = {1: 20, 2: 60, 3: 120}
         periods_to_calc = [d for d in ALL_PERIODS if d > freeze_thresholds.get(current_freeze, 0)]
         if current_freeze == 0:
             periods_to_calc = ALL_PERIODS
+        if not periods_to_calc:
+            return False, "freeze_level 已冻结", None
 
-        # 计算日期范围：提及日前5天 ~ 后足够天数
         dt = datetime.strptime(mention_date, '%Y-%m-%d')
         max_period = max(periods_to_calc)
         start = (dt - timedelta(days=10)).strftime('%Y-%m-%d')
         end = (dt + timedelta(days=int(max_period * 1.5) + 10)).strftime('%Y-%m-%d')
 
-        prices = self.fetch_price_range(stock_code, start, end)
+        price_key = (stock_code, start, end)
+        prices = price_cache.get(price_key) if price_cache is not None else None
+        if prices is None:
+            prices = self.fetch_price_range(stock_code, start, end)
+            if price_cache is not None:
+                price_cache[price_key] = prices
         if not prices:
-            return False, "无可用行情数据"
+            return False, "无可用行情数据", None
 
-        # 找到提及日或之后最近的交易日作为基准
         base_price = None
         base_idx = -1
         for i, p in enumerate(prices):
@@ -707,21 +692,23 @@ class StockAnalyzer:
                 break
 
         if base_price is None or base_price == 0:
-            return False, "未找到提及日及之后交易日价格"
+            return False, "未找到提及日及之后交易日价格", None
 
-        # 获取沪深300 对应期间数据
-        index_prices = self._fetch_index_price(start, end)
+        index_key = (start, end)
+        index_prices = index_cache.get(index_key) if index_cache is not None else None
+        if index_prices is None:
+            index_prices = self._fetch_index_price(start, end)
+            if index_cache is not None:
+                index_cache[index_key] = index_prices
 
-        # 找到沪深300 基准价
         index_base = None
         for p in prices:
             if p['trade_date'] >= mention_date and p['trade_date'] in index_prices:
                 index_base = index_prices[p['trade_date']]
                 break
 
-        # 计算各期限收益率
-        returns = {}
-        excess_returns = {}
+        returns: Dict[int, Optional[float]] = {}
+        excess_returns: Dict[int, Optional[float]] = {}
         for days in periods_to_calc:
             target_idx = base_idx + days
             if target_idx < len(prices):
@@ -729,7 +716,6 @@ class StockAnalyzer:
                 ret = (target_price - base_price) / base_price * 100
                 returns[days] = round(ret, 2)
 
-                # 超额收益
                 target_date = prices[target_idx]['trade_date']
                 if index_base and target_date in index_prices and index_base > 0:
                     index_ret = (index_prices[target_date] - index_base) / index_base * 100
@@ -740,9 +726,8 @@ class StockAnalyzer:
                 returns[days] = None
                 excess_returns[days] = None
 
-        # 计算期间最大涨幅和最大回撤（使用最长可用周期，最多250个交易日）
-        max_return = 0
-        max_drawdown = 0
+        max_return = 0.0
+        max_drawdown = 0.0
         max_track = min(base_idx + max_period + 1, len(prices))
         for i in range(base_idx + 1, max_track):
             ret = (prices[i]['high'] - base_price) / base_price * 100
@@ -750,10 +735,7 @@ class StockAnalyzer:
             dd = (prices[i]['low'] - base_price) / base_price * 100
             max_drawdown = min(max_drawdown, dd)
 
-        # 确定新的 freeze_level
         today = datetime.now().strftime('%Y-%m-%d')
-        trading_days_elapsed = base_idx  # 粗略估计
-        # 更准确：计算提及日到今天之间的交易日数
         today_idx = -1
         for i, p in enumerate(prices):
             if p['trade_date'] >= today:
@@ -773,57 +755,111 @@ class StockAnalyzer:
         elif trading_days_elapsed > 25:
             new_freeze = max(current_freeze, 1)
 
-        # 写入数据库（使用 UPSERT 模式）
+        payload = {
+            "periods_to_calc": periods_to_calc,
+            "price_at_mention": round(base_price, 2),
+            "returns": returns,
+            "excess_returns": excess_returns,
+            "max_return": round(max_return, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "new_freeze": new_freeze,
+        }
+        return True, "ok", payload
+
+    def _save_performance_payload(
+        self,
+        mention_id: int,
+        stock_code: str,
+        mention_date: str,
+        payload: Dict[str, Any],
+        row_exists: bool,
+    ) -> None:
+        """将收益 payload 写入 mention_performance。"""
+        returns: Dict[int, Optional[float]] = payload["returns"]
+        excess_returns: Dict[int, Optional[float]] = payload["excess_returns"]
+        periods_to_calc: List[int] = payload["periods_to_calc"]
+        new_freeze: int = int(payload["new_freeze"])
+
         conn = self._get_conn()
         cursor = conn.cursor()
+        try:
+            if row_exists:
+                updates = []
+                params = []
+                for days in periods_to_calc:
+                    if returns.get(days) is not None:
+                        updates.append(f'return_{days}d = ?')
+                        params.append(returns[days])
+                        updates.append(f'excess_return_{days}d = ?')
+                        params.append(excess_returns.get(days))
+                updates.append('max_return = ?')
+                params.append(payload["max_return"])
+                updates.append('max_drawdown = ?')
+                params.append(payload["max_drawdown"])
+                updates.append('freeze_level = ?')
+                params.append(new_freeze)
+                params.append(mention_id)
 
-        if row:
-            # 更新已存在的记录（只更新未冻结字段）
-            updates = []
-            params = []
-            for days in periods_to_calc:
-                if returns.get(days) is not None:
-                    updates.append(f'return_{days}d = ?')
-                    params.append(returns[days])
-                    updates.append(f'excess_return_{days}d = ?')
-                    params.append(excess_returns.get(days))
-            updates.append('max_return = ?')
-            params.append(round(max_return, 2))
-            updates.append('max_drawdown = ?')
-            params.append(round(max_drawdown, 2))
-            updates.append('freeze_level = ?')
-            params.append(new_freeze)
-            params.append(mention_id)
+                if updates:
+                    cursor.execute(f'''
+                        UPDATE mention_performance SET {', '.join(updates)}
+                        WHERE mention_id = ?
+                    ''', params)
+            else:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO mention_performance
+                    (mention_id, stock_code, mention_date, price_at_mention,
+                     return_1d, return_3d, return_5d, return_10d, return_20d,
+                     return_60d, return_120d, return_250d,
+                     excess_return_1d, excess_return_3d, excess_return_5d,
+                     excess_return_10d, excess_return_20d,
+                     excess_return_60d, excess_return_120d, excess_return_250d,
+                     max_return, max_drawdown, freeze_level)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    mention_id, stock_code, mention_date, payload["price_at_mention"],
+                    returns.get(1), returns.get(3), returns.get(5),
+                    returns.get(10), returns.get(20),
+                    returns.get(60), returns.get(120), returns.get(250),
+                    excess_returns.get(1), excess_returns.get(3), excess_returns.get(5),
+                    excess_returns.get(10), excess_returns.get(20),
+                    excess_returns.get(60), excess_returns.get(120), excess_returns.get(250),
+                    payload["max_return"], payload["max_drawdown"], new_freeze
+                ))
+            conn.commit()
+        finally:
+            conn.close()
 
-            if updates:
-                cursor.execute(f'''
-                    UPDATE mention_performance SET {', '.join(updates)}
-                    WHERE mention_id = ?
-                ''', params)
-        else:
-            # 新插入
-            cursor.execute('''
-                INSERT OR REPLACE INTO mention_performance
-                (mention_id, stock_code, mention_date, price_at_mention,
-                 return_1d, return_3d, return_5d, return_10d, return_20d,
-                 return_60d, return_120d, return_250d,
-                 excess_return_1d, excess_return_3d, excess_return_5d,
-                 excess_return_10d, excess_return_20d,
-                 excess_return_60d, excess_return_120d, excess_return_250d,
-                 max_return, max_drawdown, freeze_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                mention_id, stock_code, mention_date, round(base_price, 2),
-                returns.get(1), returns.get(3), returns.get(5),
-                returns.get(10), returns.get(20),
-                returns.get(60), returns.get(120), returns.get(250),
-                excess_returns.get(1), excess_returns.get(3), excess_returns.get(5),
-                excess_returns.get(10), excess_returns.get(20),
-                excess_returns.get(60), excess_returns.get(120), excess_returns.get(250),
-                round(max_return, 2), round(max_drawdown, 2), new_freeze
-            ))
-        conn.commit()
+    def _calc_mention_performance(self, mention_id: int, stock_code: str, mention_date: str) -> Tuple[bool, str]:
+        """
+        计算一次提及事件的后续表现
+        T+1, T+3, T+5, T+10, T+20, T+60, T+120, T+250 收益率 & 超额收益率
+        支持渐进式冻结：已冻结的字段不再重新拉取行情
+        """
+        # 检查当前 freeze_level
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('SELECT freeze_level FROM mention_performance WHERE mention_id = ?', (mention_id,))
+        row = cursor.fetchone()
+        current_freeze = row[0] if row and row[0] else 0
         conn.close()
+        row_exists = bool(row)
+
+        ok, reason, payload = self._compute_performance_payload(
+            stock_code=stock_code,
+            mention_date=mention_date,
+            current_freeze=int(current_freeze),
+        )
+        if not ok or payload is None:
+            return False, reason
+
+        self._save_performance_payload(
+            mention_id=mention_id,
+            stock_code=stock_code,
+            mention_date=mention_date,
+            payload=payload,
+            row_exists=row_exists,
+        )
         return True, "ok"
 
     # ========== 全量扫描 ==========
@@ -1042,7 +1078,7 @@ class StockAnalyzer:
 
         # 查询1：未计算收益的新提及
         cursor.execute('''
-            SELECT sm.id, sm.stock_code, sm.mention_date
+            SELECT sm.id, sm.stock_code, sm.mention_date, 0 AS freeze_level, 0 AS row_exists
             FROM stock_mentions sm
             LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
             WHERE mp.mention_id IS NULL
@@ -1052,13 +1088,16 @@ class StockAnalyzer:
 
         # 查询2：已有记录但未完全冻结的提及（需要更新长周期数据）
         cursor.execute('''
-            SELECT sm.id, sm.stock_code, sm.mention_date
+            SELECT sm.id, sm.stock_code, sm.mention_date, COALESCE(mp.freeze_level, 0) AS freeze_level, 1 AS row_exists
             FROM stock_mentions sm
             JOIN mention_performance mp ON sm.id = mp.mention_id
             WHERE (mp.freeze_level IS NULL OR mp.freeze_level < 3)
             AND sm.mention_date >= ?
         ''', (since_date,))
         update_pending = cursor.fetchall()
+
+        cursor.execute('SELECT MAX(trade_date) FROM stock_price_cache')
+        max_trade_date = (cursor.fetchone() or [None])[0]
 
         conn.close()
 
@@ -1072,12 +1111,75 @@ class StockAnalyzer:
         skipped = 0
         errors = 0
         total = len(all_pending)
-        
-        for i, (mention_id, stock_code, mention_date) in enumerate(all_pending, 1):
+
+        if total == 0:
+            self.log("✅ 收益计算完成：成功 0 条，跳过 0 条，失败 0 条")
+            return {
+                'new_calculated': total_new,
+                'updated': total_update,
+                'processed': 0,
+                'skipped': 0,
+                'errors': 0
+            }
+
+        # 预检查：行情缓存明显滞后时直接跳过本轮，避免大量无效循环日志
+        try:
+            pending_max_mention_date = max(item[2] for item in all_pending if item[2])
+            if max_trade_date and pending_max_mention_date and max_trade_date < pending_max_mention_date:
+                trade_dt = datetime.strptime(max_trade_date, '%Y-%m-%d').date()
+                mention_dt = datetime.strptime(pending_max_mention_date, '%Y-%m-%d').date()
+                stale_days = (mention_dt - trade_dt).days
+                if stale_days > 3:
+                    reason = (
+                        f"行情缓存过旧（最新 {max_trade_date}，待算提及最晚 {pending_max_mention_date}，滞后 {stale_days} 天）"
+                    )
+                    self.log(f"⚠️ {reason}，本轮收益计算直接跳过 {total} 条")
+                    if progress_callback:
+                        progress_callback(1, total, f"跳过批次：{reason}")
+                    return {
+                        'new_calculated': total_new,
+                        'updated': total_update,
+                        'processed': 0,
+                        'skipped': total,
+                        'errors': 0,
+                        'skipped_reason': reason
+                    }
+                self.log(f"⚠️ 行情缓存偏旧：最新 {max_trade_date}，待算最晚 {pending_max_mention_date}")
+        except Exception as e:
+            log_warning(f"收益计算前的新鲜度预检查失败: {e}")
+
+        price_cache: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+        index_cache: Dict[Tuple[str, str], Dict[str, float]] = {}
+        payload_cache: Dict[Tuple[str, str, int], Tuple[bool, str, Optional[Dict[str, Any]]]] = {}
+        unique_compute_count = 0
+
+        for i, (mention_id, stock_code, mention_date, freeze_level, row_exists) in enumerate(all_pending, 1):
             status_msg = ""
             try:
-                written, reason = self._calc_mention_performance(mention_id, stock_code, mention_date)
+                cache_key = (stock_code, mention_date, int(freeze_level or 0))
+                cached_result = payload_cache.get(cache_key)
+                if cached_result is None:
+                    unique_compute_count += 1
+                    cached_result = self._compute_performance_payload(
+                        stock_code=stock_code,
+                        mention_date=mention_date,
+                        current_freeze=int(freeze_level or 0),
+                        price_cache=price_cache,
+                        index_cache=index_cache,
+                    )
+                    payload_cache[cache_key] = cached_result
+
+                written, reason, payload = cached_result
                 if written:
+                    if payload is None:
+                        raise RuntimeError("收益计算结果缺少 payload")
+                    self._save_performance_payload(
+                        mention_id=mention_id,
+                        stock_code=stock_code,
+                        mention_date=mention_date,
+                        payload=payload,
+                        row_exists=bool(row_exists),
+                    )
                     processed += 1
                     status_msg = f"已保存 {stock_code} ({mention_date})"
                 else:
@@ -1096,9 +1198,10 @@ class StockAnalyzer:
             if i % 20 == 0 or i == total:
                 self.log(f"📈 收益计算中: {i}/{total} (成功: {processed}, 跳过: {skipped}, 错误: {errors})")
 
-            time.sleep(0.3)
-
-        self.log(f"✅ 收益计算完成：成功 {processed} 条，跳过 {skipped} 条，失败 {errors} 条")
+        self.log(
+            f"✅ 收益计算完成：成功 {processed} 条，跳过 {skipped} 条，失败 {errors} 条"
+            f"（唯一计算键 {unique_compute_count}，复用 {max(total - unique_compute_count, 0)}）"
+        )
 
         return {
             'new_calculated': total_new,

@@ -340,12 +340,20 @@ class AutoScheduler:
                     gid = str(group.get("group_id"))
                     self.stats["current_group"] = gid
                     self.log(f"⏳ [手动分析 {idx}/{len(groups)}] 群组 {gid}")
-                    # 同步计算过程转为线程执行，避免阻塞主事件循环
-                    await asyncio.to_thread(
-                        lambda: StockAnalyzer(gid).calc_pending_performance(
+                    def _analyze_group():
+                        analyzer = StockAnalyzer(gid)
+                        extract_res = analyzer.extract_only()
+                        self.log(
+                            f"   📝 自动提取: new_topics={extract_res.get('new_topics', 0)}, "
+                            f"mentions={extract_res.get('mentions_extracted', 0)}, "
+                            f"unique_stocks={extract_res.get('unique_stocks', 0)}"
+                        )
+                        return analyzer.calc_pending_performance(
                             calc_window_days=int(self.config.get("calc_window_days", 365) or 365)
                         )
-                    )
+
+                    # 同步计算过程转为线程执行，避免阻塞主事件循环
+                    await asyncio.to_thread(_analyze_group)
                 self.stats["last_calc_time"] = self._now().isoformat()
                 self.stats["calc_rounds"] = int(self.stats.get("calc_rounds", 0)) + 1
                 self.log("✅ 手动分析完成")

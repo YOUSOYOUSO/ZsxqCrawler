@@ -161,6 +161,7 @@ export default function GlobalOpsPanel({
   const [cleanupPreviewData, setCleanupPreviewData] = useState<BlacklistCleanupPreviewData | null>(null);
   const [cleanupTaskStatus, setCleanupTaskStatus] = useState<string>('idle');
   const [groupNameMap, setGroupNameMap] = useState<Record<string, string>>({});
+  const [allGroups, setAllGroups] = useState<Array<Record<string, unknown>>>([]);
 
   const isPlaceholderGroupName = (name: string, groupId: string) => {
     const n = (name || '').trim();
@@ -170,9 +171,11 @@ export default function GlobalOpsPanel({
     return false;
   };
 
+  const sourceGroups = allGroups.length > 0 ? allGroups : groups;
+
   const normalizedGroups = useMemo(() => {
     const dedup: Record<string, { group_id: string; group_name: string }> = {};
-    (groups || []).forEach((g) => {
+    (sourceGroups || []).forEach((g) => {
       const rawId = g.group_id ?? g.id;
       const groupId = rawId != null ? String(rawId) : '';
       const rawName = String(g.group_name ?? g.name ?? '').trim();
@@ -187,7 +190,12 @@ export default function GlobalOpsPanel({
       };
     });
     return Object.values(dedup);
-  }, [groups, groupNameMap]);
+  }, [sourceGroups, groupNameMap]);
+
+  const selectableGroups = useMemo(
+    () => normalizedGroups.filter((g) => !blacklistGroupIds.includes(g.group_id)),
+    [normalizedGroups, blacklistGroupIds]
+  );
 
   const formatGroupLabel = (groupId: string, preferredName?: string) => {
     const name = (preferredName || groupNameMap[groupId] || '').trim();
@@ -274,12 +282,20 @@ export default function GlobalOpsPanel({
           }
         });
         setGroupNameMap(map);
+        setAllGroups(rows);
       } catch {
         // Ignore metadata fetch failure and keep using global groups payload.
       }
     };
     void loadGroupNames();
   }, []);
+
+  useEffect(() => {
+    if (!selectedGroupId) return;
+    if (blacklistGroupIds.includes(selectedGroupId)) {
+      setSelectedGroupId('');
+    }
+  }, [selectedGroupId, blacklistGroupIds]);
 
   const handleGlobalCrawl = async () => {
     setGlobalCrawlLoading(true);
@@ -585,7 +601,7 @@ export default function GlobalOpsPanel({
                   <SelectValue placeholder="选择群组" />
                 </SelectTrigger>
                 <SelectContent>
-                  {normalizedGroups.map((g) => (
+                  {selectableGroups.map((g) => (
                     <SelectItem key={g.group_id} value={g.group_id} className="text-xs">
                       {formatGroupLabel(g.group_id, g.group_name)}
                     </SelectItem>

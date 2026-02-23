@@ -250,6 +250,10 @@ export default function StockDashboard({
     hideSummaryCards = false,
 }: StockDashboardProps) {
     const isGlobal = mode === 'global';
+    const scanTaskStorageKey = useMemo(
+        () => (isGlobal ? 'stock-dashboard:scan-task:global' : `stock-dashboard:scan-task:group:${String(groupId ?? 'unknown')}`),
+        [groupId, isGlobal]
+    );
     const [activeView, setActiveView] = useState<'overview' | 'winrate' | 'sector' | 'signals' | 'ai'>(initialView);
     const effectiveAllowedViews = useMemo(() => (
         allowedViews && allowedViews.length > 0
@@ -336,6 +340,88 @@ export default function StockDashboard({
         if (metaName) return metaName;
         return rawName || `Group ${gid}`;
     }, [groupMetaMap]);
+
+    const isAnalyzeTaskForCurrentDashboard = useCallback((task: any) => {
+        const taskType = String(task?.type ?? '');
+        if (isGlobal) {
+            return taskType === 'global_scan' || taskType.startsWith('global_analyze_performance');
+        }
+        return taskType === `stock_scan_${String(groupId ?? '')}`;
+    }, [groupId, isGlobal]);
+
+    const sortTasksByTimeDesc = useCallback((a: any, b: any) => {
+        const aTs = new Date(a?.updated_at ?? a?.created_at ?? 0).getTime();
+        const bTs = new Date(b?.updated_at ?? b?.created_at ?? 0).getTime();
+        return bTs - aTs;
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        if (scanTaskId) {
+            window.localStorage.setItem(scanTaskStorageKey, scanTaskId);
+        } else {
+            window.localStorage.removeItem(scanTaskStorageKey);
+        }
+    }, [scanTaskId, scanTaskStorageKey]);
+
+    useEffect(() => {
+        if (hideScanActions) return;
+        let cancelled = false;
+
+        const recoverTask = async () => {
+            let restoredTaskId: string | null = null;
+
+            try {
+                const tasks = await apiClient.getTasks();
+                const candidates = tasks.filter(isAnalyzeTaskForCurrentDashboard).sort(sortTasksByTimeDesc);
+                const running = candidates.find((task: any) => ['pending', 'running', 'stopping'].includes(String(task?.status ?? '')));
+
+                if (running) {
+                    restoredTaskId = running.task_id;
+                    if (!cancelled) {
+                        setScanning(true);
+                        setShowTaskLog(true);
+                    }
+                } else if (candidates.length > 0) {
+                    restoredTaskId = candidates[0].task_id;
+                }
+            } catch (err) {
+                console.warn('[StockDashboard] Failed to recover task from server:', err);
+            }
+
+            if (!restoredTaskId && typeof window !== 'undefined') {
+                restoredTaskId = window.localStorage.getItem(scanTaskStorageKey);
+            }
+
+            if (cancelled) return;
+            if (restoredTaskId) {
+                setScanTaskId(restoredTaskId);
+            } else {
+                setScanTaskId(null);
+                setScanning(false);
+            }
+        };
+
+        recoverTask();
+
+        return () => { cancelled = true; };
+    }, [hideScanActions, isAnalyzeTaskForCurrentDashboard, scanTaskStorageKey, sortTasksByTimeDesc]);
+
+    useEffect(() => {
+        if (!scanTaskId || !scanning) return;
+        const timer = setInterval(async () => {
+            try {
+                const task = await apiClient.getTask(scanTaskId);
+                const status = String(task?.status ?? '');
+                if (['completed', 'failed', 'cancelled', 'stopped', 'idle'].includes(status)) {
+                    setScanning(false);
+                }
+            } catch (err) {
+                console.warn('[StockDashboard] Failed to poll task status:', err);
+            }
+        }, 5000);
+        return () => clearInterval(timer);
+    }, [scanTaskId, scanning]);
 
     /* ── loaders ── */
     const loadStats = useCallback(async () => {
@@ -734,7 +820,7 @@ export default function StockDashboard({
                             taskId={scanTaskId}
                             onClose={() => setShowTaskLog(false)}
                             inline={true}
-                            onTaskStop={() => { }}
+                            onTaskStop={() => setScanning(false)}
                         />
                     </div>
                 </div>

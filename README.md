@@ -15,6 +15,40 @@
 - **命令行界面**: 提供交互式命令行工具
 - **Web 界面**: 现代化的 React 前端界面，操作直观
 
+## 架构与目录
+
+项目正在从“单体入口文件”逐步演进为分层结构，核心目录如下：
+
+```text
+api/app_factory.py     # 统一路由装配入口
+api/routers/           # FastAPI 路由层（按域拆分）
+api/services/          # 编排与运行时服务
+api/schemas/           # Pydantic 模型层
+api/deps/container.py  # 服务容器（单例依赖）
+scripts/maintenance/   # 一次性维护脚本
+docs/                  # 架构/ADR/路由映射文档
+frontend/src/lib/      # 前端 API 客户端与类型定义
+```
+
+详细设计与决策记录：
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/ROUTING_MAP.md`](docs/ROUTING_MAP.md)
+- [`docs/ADR/ADR-0001-layering.md`](docs/ADR/ADR-0001-layering.md)
+
+维护约定（贡献前建议先看）：
+
+- 运行时代码不要放在根目录测试脚本里。
+- 一次性脚本放到 `scripts/maintenance/` 或 `.local/dev-scripts/`。
+- 新增接口优先落到 `api/routers/` + `api/services/`，不要继续堆积到 `main.py`。
+- 保持 API 路径兼容；迁移时先增量拆分，再删旧绑定。
+
+### 架构路线图
+
+1. 已完成：`scheduler / stocks / global_read / tasks / global_tasks` 路由分离，`TaskRuntime` 接管任务状态。
+2. 进行中：`crawl / files / topics / groups / columns / settings` 域路由迁移。
+3. 下一步：将路由代理实现替换为 service 直连，进一步缩减 `main.py`。
+
 ## 界面展示
 
 ### Web 界面

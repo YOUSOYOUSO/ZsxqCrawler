@@ -15,7 +15,6 @@ import requests
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, Field
 import uvicorn
 import mimetypes
 import random
@@ -37,6 +36,25 @@ from accounts_sql_manager import get_accounts_sql_manager
 from account_info_db import get_account_info_db
 from zsxq_columns_database import ZSXQColumnsDatabase
 from logger_config import log_info, log_warning, log_error, log_exception, log_debug, ensure_configured
+from api.app_factory import register_core_routers
+from api.deps.container import get_task_runtime
+from api.schemas.models import (
+    AccountCreateRequest,
+    AssignGroupAccountRequest,
+    ColumnsSettingsRequest,
+    ConfigModel,
+    CrawlBehaviorSettingsRequest,
+    CrawlHistoricalRequest,
+    CrawlSettingsRequest,
+    CrawlTimeRangeRequest,
+    CrawlerSettingsRequest,
+    DownloaderSettingsRequest,
+    FileDownloadRequest,
+    GlobalCrawlRequest,
+    GlobalFileCollectRequest,
+    GlobalFileDownloadRequest,
+    ScanFilterConfigRequest,
+)
 
 # 初始化日志系统
 ensure_configured()
@@ -60,6 +78,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+register_core_routers(app)
 
 def _parse_cors_origins() -> List[str]:
     """
@@ -84,29 +103,17 @@ app.add_middleware(
 
 # 全局变量存储爬虫实例和任务状态
 crawler_instance: Optional[ZSXQInteractiveCrawler] = None
-current_tasks: Dict[str, Dict[str, Any]] = {
-    "scheduler": {
-        "task_id": "scheduler",
-        "type": "scheduler",
-        "status": "stopped",
-        "message": "自动调度系统（未启动）",
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat()
-    }
-}
-task_counter = 0
-task_logs: Dict[str, List[str]] = {"scheduler": []}  # 存储任务日志
+task_runtime = get_task_runtime()
+current_tasks: Dict[str, Dict[str, Any]] = task_runtime.tasks
+task_logs: Dict[str, List[str]] = task_runtime.logs  # 存储任务日志
+task_counter = 0  # legacy task id counter (to be removed after full router migration)
 sse_connections: Dict[str, List] = {}  # 存储SSE连接
-task_stop_flags: Dict[str, bool] = {}  # 任务停止标志
+task_stop_flags: Dict[str, bool] = task_runtime.stop_flags  # 任务停止标志
 file_downloader_instances: Dict[str, Any] = {}  # 存储文件下载器实例
 
 # 调度器日志钩子
 def scheduler_log_callback(msg: str):
-    if "scheduler" not in task_logs:
-        task_logs["scheduler"] = []
-    task_logs["scheduler"].append(msg)
-    if len(task_logs["scheduler"]) > 500:
-        task_logs["scheduler"] = task_logs["scheduler"][-500:]
+    task_runtime.set_scheduler_log(msg, cap=500)
 
 # 调度器状态更新钩子
 def scheduler_status_callback(status: str, message: str):
@@ -233,79 +240,7 @@ def get_cached_local_group_ids(force_refresh: bool = False) -> set:
     return _local_groups_cache.get("ids", set())
 
 
-# Pydantic模型定义
-class ConfigModel(BaseModel):
-    cookie: str = Field(..., description="知识星球Cookie")
-
-class CrawlHistoricalRequest(BaseModel):
-    pages: int = Field(default=10, ge=1, le=1000, description="爬取页数")
-    per_page: int = Field(default=20, ge=1, le=100, description="每页数量")
-    crawlIntervalMin: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最小值(秒)")
-    crawlIntervalMax: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最大值(秒)")
-    longSleepIntervalMin: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最小值(秒)")
-    longSleepIntervalMax: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最大值(秒)")
-    pagesPerBatch: Optional[int] = Field(default=None, ge=5, le=50, description="每批次页面数")
-
-class CrawlSettingsRequest(BaseModel):
-    crawlIntervalMin: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最小值(秒)")
-    crawlIntervalMax: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最大值(秒)")
-    longSleepIntervalMin: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最小值(秒)")
-    longSleepIntervalMax: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最大值(秒)")
-    pagesPerBatch: Optional[int] = Field(default=None, ge=5, le=50, description="每批次页面数")
-
-class CrawlBehaviorSettingsRequest(BaseModel):
-    crawl_interval_min: float = Field(default=2.0, ge=1.0, le=60.0)
-    crawl_interval_max: float = Field(default=5.0, ge=1.0, le=60.0)
-    long_sleep_interval_min: float = Field(default=180.0, ge=60.0, le=3600.0)
-    long_sleep_interval_max: float = Field(default=300.0, ge=60.0, le=3600.0)
-    pages_per_batch: int = Field(default=15, ge=5, le=50)
-
-class FileDownloadRequest(BaseModel):
-    max_files: Optional[int] = Field(default=None, description="最大下载文件数")
-    sort_by: str = Field(default="download_count", description="排序方式: download_count 或 time")
-    download_interval: float = Field(default=1.0, ge=0.1, le=300.0, description="单次下载间隔（秒）")
-    long_sleep_interval: float = Field(default=60.0, ge=10.0, le=3600.0, description="长休眠间隔（秒）")
-    files_per_batch: int = Field(default=10, ge=1, le=100, description="下载多少文件后触发长休眠")
-    # 随机间隔范围参数（可选）
-    download_interval_min: Optional[float] = Field(default=None, ge=1.0, le=300.0, description="随机下载间隔最小值（秒）")
-    download_interval_max: Optional[float] = Field(default=None, ge=1.0, le=300.0, description="随机下载间隔最大值（秒）")
-    long_sleep_interval_min: Optional[float] = Field(default=None, ge=10.0, le=3600.0, description="随机长休眠间隔最小值（秒）")
-    long_sleep_interval_max: Optional[float] = Field(default=None, ge=10.0, le=3600.0, description="随机长休眠间隔最大值（秒）")
-
-class ColumnsSettingsRequest(BaseModel):
-    """专栏采集设置请求"""
-    crawlIntervalMin: Optional[float] = Field(default=2.0, ge=1.0, le=60.0, description="采集间隔最小值(秒)")
-    crawlIntervalMax: Optional[float] = Field(default=5.0, ge=1.0, le=60.0, description="采集间隔最大值(秒)")
-    longSleepIntervalMin: Optional[float] = Field(default=30.0, ge=10.0, le=600.0, description="长休眠间隔最小值(秒)")
-    longSleepIntervalMax: Optional[float] = Field(default=60.0, ge=10.0, le=600.0, description="长休眠间隔最大值(秒)")
-    itemsPerBatch: Optional[int] = Field(default=10, ge=3, le=50, description="每批次处理数量")
-    downloadFiles: Optional[bool] = Field(default=True, description="是否下载文件")
-    downloadVideos: Optional[bool] = Field(default=True, description="是否下载视频(需要ffmpeg)")
-    cacheImages: Optional[bool] = Field(default=True, description="是否缓存图片")
-    incrementalMode: Optional[bool] = Field(default=False, description="增量模式：跳过已存在的文章详情")
-
-class AccountCreateRequest(BaseModel):
-    cookie: str = Field(..., description="账号Cookie")
-    name: Optional[str] = Field(default=None, description="账号名称")
-
-class AssignGroupAccountRequest(BaseModel):
-    account_id: str = Field(..., description="账号ID")
-
-class GroupInfo(BaseModel):
-    group_id: int
-    name: str
-    type: str
-    background_url: Optional[str] = None
-    owner: Optional[dict] = None
-    statistics: Optional[dict] = None
-
-class TaskResponse(BaseModel):
-    task_id: str
-    status: str  # pending, running, completed, failed, cancelled
-    message: str
-    result: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: datetime
+# Pydantic模型定义已迁移到 api/schemas/models.py
 
 # 辅助函数
 def get_crawler(log_callback=None) -> ZSXQInteractiveCrawler:
@@ -395,35 +330,15 @@ def is_configured() -> bool:
 
 def create_task(task_type: str, description: str) -> str:
     """创建新任务"""
-    global task_counter
-    task_counter += 1
-    task_id = f"task_{task_counter}_{int(datetime.now().timestamp())}"
-    
-    current_tasks[task_id] = {
-        "task_id": task_id,
-        "type": task_type,
-        "status": "pending",
-        "message": description,
-        "result": None,
-        "created_at": datetime.now(),
-        "updated_at": datetime.now()
-    }
-
-    # 初始化任务日志和停止标志
-    task_logs[task_id] = []
-    task_stop_flags[task_id] = False
+    task_id = task_runtime.create_task(task_type=task_type, message=description, status="pending")
     add_task_log(task_id, f"任务创建: {description}")
-
     return task_id
 
 def add_task_log(task_id: str, log_message: str):
     """添加任务日志"""
-    if task_id not in task_logs:
-        task_logs[task_id] = []
-
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    formatted_log = f"[{timestamp}] {log_message}"
-    task_logs[task_id].append(formatted_log)
+    task_runtime.append_log(task_id, log_message)
+    logs = task_logs.get(task_id, [])
+    formatted_log = logs[-1] if logs else log_message
 
     # 广播日志到所有SSE连接
     broadcast_log(task_id, formatted_log)
@@ -470,15 +385,8 @@ def build_stealth_headers(cookie: str) -> Dict[str, str]:
 
 def update_task(task_id: str, status: str, message: str, result: Optional[Dict[str, Any]] = None):
     """更新任务状态"""
+    task_runtime.update_task(task_id=task_id, status=status, message=message, result=result)
     if task_id in current_tasks:
-        current_tasks[task_id].update({
-            "status": status,
-            "message": message,
-            "result": result,
-            "updated_at": datetime.now()
-        })
-
-        # 添加状态变更日志
         add_task_log(task_id, f"状态更新: {message}")
 
 
@@ -585,7 +493,7 @@ def stop_task(task_id: str) -> bool:
         return False
 
     # 设置停止标志
-    task_stop_flags[task_id] = True
+    task_runtime.request_stop(task_id)
     add_task_log(task_id, "🛑 收到停止请求，正在停止任务...")
 
     # 如果有爬虫实例，也设置爬虫的停止标志
@@ -616,8 +524,7 @@ def stop_task(task_id: str) -> bool:
 
 def is_task_stopped(task_id: str) -> bool:
     """检查任务是否被停止"""
-    stopped = task_stop_flags.get(task_id, False)
-    return stopped
+    return task_runtime.is_stopped(task_id)
 
 # 应用设置（持久化）
 CRAWL_SETTINGS_DEFAULTS = {
@@ -1110,17 +1017,14 @@ async def get_database_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取数据库统计失败: {str(e)}")
 
-@app.get("/api/tasks")
 async def get_tasks():
     """获取所有任务状态"""
     return list(current_tasks.values())
 
-@app.get("/api/tasks/summary")
 async def get_tasks_summary():
     """按业务类别返回运行中 + 最近一次任务快照，用于 Dashboard 恢复状态。"""
     return _build_task_summary()
 
-@app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str):
     """获取特定任务状态"""
     if task_id not in current_tasks:
@@ -1128,7 +1032,6 @@ async def get_task(task_id: str):
 
     return current_tasks[task_id]
 
-@app.post("/api/tasks/{task_id}/stop")
 async def stop_task_api(task_id: str):
     """停止任务"""
     if stop_task(task_id):
@@ -3556,7 +3459,6 @@ async def delete_group_topics(group_id: int):
         crawler.db.conn.rollback()
         raise HTTPException(status_code=500, detail=f"删除话题数据失败: {str(e)}")
 
-@app.get("/api/tasks/{task_id}/logs")
 async def get_task_logs(task_id: str):
     """获取任务日志"""
     if task_id not in task_logs:
@@ -3567,7 +3469,6 @@ async def get_task_logs(task_id: str):
         "logs": task_logs[task_id]
     }
 
-@app.get("/api/tasks/{task_id}/stream")
 async def stream_task_logs(task_id: str):
     """SSE流式传输任务日志"""
     async def event_stream():
@@ -3691,13 +3592,6 @@ async def get_crawler_settings():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取爬虫设置失败: {str(e)}")
 
-class CrawlerSettingsRequest(BaseModel):
-    min_delay: float = Field(default=2.0, ge=0.5, le=10.0)
-    max_delay: float = Field(default=5.0, ge=1.0, le=20.0)
-    long_delay_interval: int = Field(default=15, ge=5, le=100)
-    timestamp_offset_ms: int = Field(default=1, ge=0, le=1000)
-    debug_mode: bool = Field(default=False)
-
 @app.post("/api/settings/crawler")
 async def update_crawler_settings(request: CrawlerSettingsRequest):
     """更新爬虫设置"""
@@ -3754,13 +3648,6 @@ async def get_downloader_settings():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取下载器设置失败: {str(e)}")
-
-class DownloaderSettingsRequest(BaseModel):
-    download_interval_min: int = Field(default=30, ge=1, le=300)
-    download_interval_max: int = Field(default=60, ge=5, le=600)
-    long_delay_interval: int = Field(default=10, ge=1, le=100)
-    long_delay_min: int = Field(default=300, ge=60, le=1800)
-    long_delay_max: int = Field(default=600, ge=120, le=3600)
 
 @app.post("/api/settings/downloader")
 async def update_downloader_settings(request: DownloaderSettingsRequest):
@@ -3910,18 +3797,6 @@ def get_account_summary_for_group_auto(group_id: str) -> Optional[Dict[str, Any]
 # =========================
 # 新增：按时间区间爬取
 # =========================
-
-class CrawlTimeRangeRequest(BaseModel):
-    startTime: Optional[str] = Field(default=None, description="开始时间，支持 YYYY-MM-DD 或 ISO8601，缺省则按 lastDays 推导")
-    endTime: Optional[str] = Field(default=None, description="结束时间，默认当前时间（本地东八区）")
-    lastDays: Optional[int] = Field(default=None, ge=1, le=3650, description="最近N天（与 startTime/endTime 互斥优先；当 startTime 缺省时可用）")
-    perPage: Optional[int] = Field(default=20, ge=1, le=100, description="每页数量")
-    # 可选的随机间隔设置（与其他爬取接口保持一致）
-    crawlIntervalMin: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最小值(秒)")
-    crawlIntervalMax: Optional[float] = Field(default=None, ge=1.0, le=60.0, description="爬取间隔最大值(秒)")
-    longSleepIntervalMin: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最小值(秒)")
-    longSleepIntervalMax: Optional[float] = Field(default=None, ge=60.0, le=3600.0, description="长休眠间隔最大值(秒)")
-    pagesPerBatch: Optional[int] = Field(default=None, ge=5, le=50, description="每批次页面数")
 
 
 def run_crawl_time_range_task(task_id: str, group_id: str, request: "CrawlTimeRangeRequest"):
@@ -5261,251 +5136,7 @@ def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: b
     return {"task_id": task_id, "message": "股票扫描任务已启动"}
 
 
-@app.get("/api/groups/{group_id}/stock/topics")
-def get_stock_topics(group_id: str, page: int = 1, per_page: int = 20):
-    """获取按话题分组的股票提及列表"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_topic_mentions(page=page, per_page=per_page)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取话题列表失败: {str(e)}")
-
-@app.get("/api/groups/{group_id}/stock/mentions")
-def get_stock_mentions(group_id: str, stock_code: str = None,
-                              page: int = 1, per_page: int = 50,
-                              sort_by: str = 'mention_date', order: str = 'desc'):
-    """获取股票提及列表"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_mentions(stock_code=stock_code, page=page,
-                                     per_page=per_page, sort_by=sort_by, order=order)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取提及数据失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/{stock_code}/events")
-def get_stock_events(group_id: str, stock_code: str):
-    """获取某只股票的全部提及事件 + 每次后续表现"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_stock_events(stock_code)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取股票事件失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/{stock_code}/price")
-def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90):
-    """获取股票价格走势 + 提及标注点"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_stock_price_with_mentions(stock_code, days=days)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取价格数据失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/win-rate")
-def get_stock_win_rate(group_id: str, min_mentions: int = 2,
-                       return_period: str = 'return_5d', limit: int = 50,
-                       start_date: Optional[str] = None, end_date: Optional[str] = None,
-                       page: int = 1, page_size: int = 20,
-                       sort_by: str = 'win_rate', order: str = 'desc'):
-    """胜率排行榜：按提及后N日正收益率排序（支持 min_mentions / 时间区间 / 排序）"""
-    try:
-        min_mentions = max(1, min_mentions)
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_win_rate_ranking(min_mentions=min_mentions,
-                                              return_period=return_period, limit=limit,
-                                              start_date=start_date, end_date=end_date,
-                                              page=page, page_size=page_size,
-                                              sort_by=sort_by, order=order)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取胜率排行失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/sector-heat")
-def get_sector_heatmap(group_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
-    """板块热度分析"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_sector_heatmap(start_date=start_date, end_date=end_date)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取板块热度失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/signals")
-def get_stock_signals(group_id: str, lookback_days: int = 7, min_mentions: int = 2,
-                      start_date: Optional[str] = None, end_date: Optional[str] = None):
-    """信号雷达：近期高频提及 + 历史胜率高的股票（支持 min_mentions / 时间区间）"""
-    try:
-        min_mentions = max(1, min_mentions)
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_signals(
-            lookback_days=lookback_days,
-            min_mentions=min_mentions,
-            start_date=start_date,
-            end_date=end_date
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取信号雷达失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/sector-topics")
-def get_sector_topics(group_id: str, sector: str,
-                      start_date: Optional[str] = None, end_date: Optional[str] = None,
-                      page: int = 1, page_size: int = 20):
-    """板块话题明细（按时间倒序）"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_sector_topics(
-            sector=sector,
-            start_date=start_date,
-            end_date=end_date,
-            page=page,
-            page_size=page_size
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取板块话题失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/stock/stats")
-def get_stock_stats(group_id: str):
-    """获取股票分析概览统计"""
-    try:
-        analyzer = StockAnalyzer(group_id)
-        return analyzer.get_summary_stats()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
-
-
-# ========== AI 智能分析 API ==========
-
-from ai_analyzer import AIAnalyzer
-
-class AIConfigModel(BaseModel):
-    api_key: str
-    base_url: Optional[str] = None
-    model: Optional[str] = None
-
-def _get_ai_analyzer(group_id: str) -> AIAnalyzer:
-    """获取 AI 分析器实例"""
-    from db_path_manager import get_db_path_manager
-    db_path = get_db_path_manager().get_topics_db_path(group_id)
-    return AIAnalyzer(db_path=db_path, group_id=group_id)
-
-
-@app.get("/api/ai/config")
-async def get_ai_config():
-    """获取 AI 配置状态"""
-    try:
-        analyzer = AIAnalyzer()
-        return analyzer.get_config_status()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取AI配置失败: {str(e)}")
-
-
-@app.post("/api/ai/config")
-async def update_ai_config(config: AIConfigModel):
-    """更新 AI 配置"""
-    try:
-        analyzer = AIAnalyzer()
-        analyzer.update_config(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            model=config.model
-        )
-        return {"success": True, "message": "AI 配置已更新"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新AI配置失败: {str(e)}")
-
-
-@app.post("/api/groups/{group_id}/ai/analyze/{stock_code}")
-async def ai_analyze_stock(group_id: str, stock_code: str, force: bool = False):
-    """AI 分析指定股票"""
-    try:
-        ai = _get_ai_analyzer(group_id)
-        result = ai.analyze_stock(stock_code, force=force)
-        if result.get('error'):
-            raise HTTPException(status_code=400, detail=result['error'])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI分析失败: {str(e)}")
-
-
-@app.post("/api/groups/{group_id}/ai/daily-brief")
-async def ai_daily_brief(group_id: str, lookback_days: int = 7, force: bool = False):
-    """生成每日投资简报"""
-    try:
-        ai = _get_ai_analyzer(group_id)
-        result = ai.generate_daily_brief(lookback_days=lookback_days, force=force)
-        if result.get('error'):
-            raise HTTPException(status_code=400, detail=result['error'])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成简报失败: {str(e)}")
-
-
-@app.post("/api/groups/{group_id}/ai/consensus")
-async def ai_consensus(group_id: str, top_n: int = 10, force: bool = False):
-    """共识分析"""
-    try:
-        ai = _get_ai_analyzer(group_id)
-        result = ai.analyze_consensus(top_n=top_n, force=force)
-        if result.get('error'):
-            raise HTTPException(status_code=400, detail=result['error'])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"共识分析失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/ai/history")
-async def ai_history(group_id: str, summary_type: Optional[str] = None, limit: int = 20):
-    """获取 AI 分析历史"""
-    try:
-        ai = _get_ai_analyzer(group_id)
-        return ai.get_history(summary_type=summary_type, limit=limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取历史失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/ai/history/{summary_id}")
-async def ai_history_detail(group_id: str, summary_id: int):
-    """获取某条历史分析的完整内容"""
-    try:
-        ai = _get_ai_analyzer(group_id)
-        result = ai.get_history_detail(summary_id)
-        if not result:
-            raise HTTPException(status_code=404, detail="未找到该分析记录")
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取详情失败: {str(e)}")
-
-
 # ========== 全局看板 API ==========
-
-class GlobalCrawlRequest(BaseModel):
-    mode: str = "latest"  # 'latest', 'all', 'incremental', 'range'
-    pages: Optional[int] = 100
-    per_page: Optional[int] = 20
-    start_time: Optional[str] = None
-    end_time: Optional[str] = None
-    max_items: Optional[int] = 500
-    last_days: Optional[int] = None
-    # 可选的间隔参数（覆盖默认值）
-    crawl_interval_min: Optional[float] = None
-    crawl_interval_max: Optional[float] = None
-    long_sleep_interval_min: Optional[float] = None
-    long_sleep_interval_max: Optional[float] = None
-    pages_per_batch: Optional[int] = None
 
 
 def _parse_global_crawl_time(raw: Optional[str], field_name: str) -> Optional[datetime]:
@@ -5531,20 +5162,6 @@ def _parse_global_crawl_time(raw: Optional[str], field_name: str) -> Optional[da
             detail=f"{field_name} 格式无效，请使用 ISO8601（例如 2026-02-21T10:00:00+08:00）",
         )
 
-class GlobalFileCollectRequest(BaseModel):
-    pass
-
-class GlobalFileDownloadRequest(BaseModel):
-    max_files: int = 50
-    sort_by: str = 'create_time'
-    download_interval: float = 30.0
-    long_sleep_interval: float = 60.0
-    files_per_batch: int = 10
-    download_interval_min: Optional[float] = None
-    download_interval_max: Optional[float] = None
-    long_sleep_interval_min: Optional[float] = None
-    long_sleep_interval_max: Optional[float] = None
-
 
 def _apply_group_scan_filter_for_tasks(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
     """统一应用白黑名单过滤，供全区任务与调度复用。"""
@@ -5560,7 +5177,6 @@ def _apply_group_scan_filter_for_tasks(groups: List[Dict[str, Any]]) -> Dict[str
         "default_action": str(cfg.get("default_action", "include")),
     }
 
-@app.post("/api/global/crawl")
 def api_global_crawl(request: GlobalCrawlRequest, background_tasks: BackgroundTasks):
     """全区话题采集（轮询所有群组）"""
     if request.mode == "range":
@@ -5722,7 +5338,6 @@ def api_global_crawl(request: GlobalCrawlRequest, background_tasks: BackgroundTa
     background_tasks.add_task(_global_crawl_task, task_id)
     return {"task_id": task_id, "message": "全区采集任务已启动"}
 
-@app.post("/api/global/files/collect")
 def api_global_files_collect(request: GlobalFileCollectRequest, background_tasks: BackgroundTasks):
     """全区文件列表收集"""
     global task_counter
@@ -5827,7 +5442,6 @@ def api_global_files_collect(request: GlobalFileCollectRequest, background_tasks
     background_tasks.add_task(_global_collect_task, task_id)
     return {"task_id": task_id, "message": "全区收集任务已启动"}
 
-@app.post("/api/global/files/download")
 def api_global_files_download(request: GlobalFileDownloadRequest, background_tasks: BackgroundTasks):
     """全区文件下载"""
     # 我们可以复用 run_file_download_task_logic
@@ -5938,7 +5552,6 @@ def api_global_files_download(request: GlobalFileDownloadRequest, background_tas
     background_tasks.add_task(_global_download_task, task_id)
     return {"task_id": task_id, "message": "全区下载任务已启动"}
 
-@app.post("/api/global/analyze/performance")
 def api_global_analyze_performance(background_tasks: BackgroundTasks, force: bool = False):
     """全区收益刷新"""
     global task_counter
@@ -6011,15 +5624,17 @@ def api_global_analyze_performance(background_tasks: BackgroundTasks, force: boo
                         task_id,
                         f"   🧩 预检查: mentions={backlog.get('mentions_total', 0)}, pending={backlog.get('pending_total', 0)}"
                     )
-                    if backlog.get('needs_extract'):
-                        extract_res = analyzer.extract_only()
+                    # 每次收益计算前都先做一次增量提取，避免“已有待算任务时跳过提取”导致新话题漏算
+                    extract_res = analyzer.extract_only()
+                    extracted_mentions = int(extract_res.get('mentions_extracted', 0) or 0)
+                    new_topics = int(extract_res.get('new_topics', 0) or 0)
+                    if new_topics > 0 or extracted_mentions > 0:
                         groups_with_auto_extract += 1
-                        extracted_mentions = int(extract_res.get('mentions_extracted', 0) or 0)
-                        mentions_extracted_total += extracted_mentions
-                        add_task_log(
-                            task_id,
-                            f"   📝 自动提取: new_topics={extract_res.get('new_topics', 0)}, mentions={extracted_mentions}, unique_stocks={extract_res.get('unique_stocks', 0)}"
-                        )
+                    mentions_extracted_total += extracted_mentions
+                    add_task_log(
+                        task_id,
+                        f"   📝 自动提取: new_topics={new_topics}, mentions={extracted_mentions}, unique_stocks={extract_res.get('unique_stocks', 0)}"
+                    )
                     
                     last_log_time = 0
                     def progress_cb(current, total, status):
@@ -6081,170 +5696,6 @@ def api_global_analyze_performance(background_tasks: BackgroundTasks, force: boo
     background_tasks.add_task(_global_analyze_task, task_id)
     return {"task_id": task_id, "message": "全区计算任务已启动"}
 
-@app.get("/api/global/stats")
-async def global_stats():
-    """全局统计概览"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_stats()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"全局统计失败: {str(e)}")
-
-@app.get("/api/global/hot-words")
-async def get_global_hot_words(
-    days: int = 1,
-    limit: int = 50,
-    force: bool = False,
-    window_hours: Optional[int] = None,
-    normalize: bool = True,
-    fallback: bool = True,
-    fallback_windows: str = "24,36,48,168"
-):
-    """获取全局热词（滑动小时窗口，支持回退与归一化）。"""
-    try:
-        allowed_windows = {24, 36, 48, 168}
-        requested_window = int(window_hours or (int(days or 1) * 24))
-        if requested_window not in allowed_windows:
-            raise HTTPException(status_code=400, detail=f"window_hours 仅支持 {sorted(allowed_windows)}")
-
-        parsed_fallback_windows: List[int] = []
-        for token in str(fallback_windows or "").split(","):
-            t = token.strip()
-            if not t:
-                continue
-            try:
-                w = int(t)
-            except Exception:
-                continue
-            if w in allowed_windows and w not in parsed_fallback_windows:
-                parsed_fallback_windows.append(w)
-        if not parsed_fallback_windows:
-            parsed_fallback_windows = [24, 36, 48, 168]
-
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_hot_words(
-            days=days,
-            limit=limit,
-            force_refresh=force,
-            window_hours=requested_window,
-            normalize=normalize,
-            fallback=fallback,
-            fallback_windows=parsed_fallback_windows,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        log_error(f"Failed to get global hot words: {e}")
-        return {
-            "words": [],
-            "window_hours_requested": int(window_hours or (int(days or 1) * 24)),
-            "window_hours_effective": int(window_hours or (int(days or 1) * 24)),
-            "fallback_applied": False,
-            "fallback_reason": f"服务异常: {str(e)}",
-            "data_points_total": 0,
-            "time_range": {},
-        }
-
-
-@app.get("/api/global/win-rate")
-async def get_global_win_rate(
-    min_mentions: int = 2,
-    return_period: str = 'return_5d',
-    limit: int = 1000,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    sort_by: str = 'win_rate',
-    order: str = 'desc',
-    page: int = 1,
-    page_size: int = 20
-):
-    """
-    Get global stock win rate ranking with pagination and filtering.
-    """
-    start_time = time.time()
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        data = analyzer.get_global_win_rate(
-            min_mentions=min_mentions,
-            return_period=return_period,
-            limit=limit,
-            start_date=start_date,
-            end_date=end_date,
-            sort_by=sort_by,
-            order=order,
-            page=page,
-            page_size=page_size
-        )
-        duration = time.time() - start_time
-        log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, start={start_date}, end={end_date})")
-        return data  # Now returns a dict with pagination info
-    except Exception as e:
-        log_error(f"Failed to get global win rate: {e}")
-        return {"error": str(e), "data": [], "total": 0}
-
-
-@app.get("/api/global/stock/{stock_code}/events")
-async def global_stock_events(stock_code: str):
-    """全局股票事件详情"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_stock_events(stock_code)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取全局股票事件失败: {str(e)}")
-
-
-@app.get("/api/global/sector-heat")
-async def get_global_sector_heat(start_date: Optional[str] = None, end_date: Optional[str] = None):
-    """
-    Get global sector heat map.
-    """
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_heat(start_date=start_date, end_date=end_date)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
-
-
-@app.get("/api/global/sector-topics")
-async def get_global_sector_topics(sector: str,
-                                   start_date: Optional[str] = None,
-                                   end_date: Optional[str] = None,
-                                   page: int = 1,
-                                   page_size: int = 20):
-    """全局板块话题明细（跨群组）"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_topics(
-            sector=sector,
-            start_date=start_date,
-            end_date=end_date,
-            page=page,
-            page_size=page_size
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"全局板块话题查询失败: {str(e)}")
-
-
-@app.get("/api/global/signals")
-async def global_signals(lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None):
-    """全局信号雷达"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_signals(lookback_days, min_mentions, start_date=start_date, end_date=end_date)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"信号查询失败: {str(e)}")
-
-
-@app.post("/api/stocks/exclude/cleanup")
 async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = None):
     """清理被 stock_exclude.json 命中的历史股票数据"""
     try:
@@ -6355,94 +5806,6 @@ async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = 
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"清理排除股票失败: {str(e)}")
-
-
-@app.get("/api/global/groups")
-async def global_groups_overview():
-    """群组概览"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_groups_overview()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
-
-
-@app.get("/api/global/topics")
-async def global_whitelist_topics(page: int = 1, per_page: int = 20, search: Optional[str] = None):
-    """白名单群组话题聚合（按最新提及时间排序）"""
-    try:
-        from global_analyzer import get_global_analyzer
-        analyzer = get_global_analyzer()
-        return analyzer.get_whitelist_topic_mentions(page=page, per_page=per_page, search=search)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取白名单话题失败: {str(e)}")
-
-
-def _get_global_ai_analyzer() -> AIAnalyzer:
-    """获取全局 AI 分析器实例"""
-    # 显式传递 None，由 AIAnalyzer 内部处理为全局模式
-    return AIAnalyzer(db_path=None, group_id=None)
-
-
-@app.post("/api/global/ai/daily-brief")
-async def global_ai_daily_brief(lookback_days: int = 7, force: bool = False):
-    """生成全局每日投资简报"""
-    try:
-        ai = _get_global_ai_analyzer()
-        result = ai.generate_global_daily_brief(lookback_days=lookback_days, force=force)
-        if result.get('error'):
-            raise HTTPException(status_code=400, detail=result['error'])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成全局简报失败: {str(e)}")
-
-
-@app.post("/api/global/ai/consensus")
-async def global_ai_consensus(top_n: int = 15, force: bool = False):
-    """全局共识分析"""
-    try:
-        ai = _get_global_ai_analyzer()
-        result = ai.analyze_global_consensus(top_n=top_n, force=force)
-        if result.get('error'):
-            raise HTTPException(status_code=400, detail=result['error'])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"全局共识分析失败: {str(e)}")
-
-
-@app.get("/api/global/ai/history")
-async def global_ai_history(summary_type: Optional[str] = None, limit: int = 20):
-    """获取全局 AI 分析历史"""
-    try:
-        ai = _get_global_ai_analyzer()
-        return ai.get_history(summary_type=summary_type, limit=limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取全局历史失败: {str(e)}")
-
-
-@app.get("/api/global/ai/history/{summary_id}")
-async def global_ai_history_detail(summary_id: int):
-    """获取某条全局历史分析的完整内容"""
-    try:
-        ai = _get_global_ai_analyzer()
-        result = ai.get_history_detail(summary_id)
-        if not result:
-            raise HTTPException(status_code=404, detail="未找到该分析记录")
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取全局详情失败: {str(e)}")
-
-class ScanFilterConfigRequest(BaseModel):
-    default_action: str = Field(default="include")
-    whitelist_group_ids: List[str] = Field(default_factory=list)
-    blacklist_group_ids: List[str] = Field(default_factory=list)
 
 
 @app.get("/api/global/scan-filter/config")
@@ -6589,7 +5952,6 @@ async def preview_blacklist_cleanup():
         raise HTTPException(status_code=500, detail=f"预览黑名单清理失败: {str(e)}")
 
 
-@app.post("/api/global/scan-filter/cleanup-blacklist")
 async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
     """清理黑名单群组中的分析数据（stock_mentions / mention_performance）。"""
     global task_counter
@@ -6786,7 +6148,6 @@ def _is_stock_candidate_group_for_scan(group: Dict[str, Any]):
     return False, "无提及且群名未命中"
 
 
-@app.post("/api/global/scan")
 def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_non_stock: bool = False):
     """全局扫描所有群组的股票数据（后台任务）"""
     global task_counter
@@ -6881,113 +6242,6 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_
 
     background_tasks.add_task(_global_scan_task, task_id)
     return {"task_id": task_id, "message": "全局扫描任务已启动"}
-
-
-# ========== 调度器 API ==========
-
-@app.get("/api/scheduler/status")
-async def scheduler_status():
-    """调度器状态"""
-    try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
-        return scheduler.get_status()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取调度器状态失败: {str(e)}")
-
-@app.get("/api/scheduler/next-runs")
-async def scheduler_next_runs(count: int = 5):
-    """下一批调度触发时间点。"""
-    try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
-        return scheduler.get_next_runs(count=count)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取下次调度时间失败: {str(e)}")
-
-
-@app.post("/api/scheduler/start")
-async def scheduler_start():
-    """启动调度器"""
-    from auto_scheduler import get_scheduler
-    scheduler = get_scheduler()
-    try:
-        await scheduler.start()
-        return {
-            "success": True,
-            "status": "started",
-            "message": "调度器已启动",
-            "scheduler": scheduler.get_status()
-        }
-    except Exception as e:
-        log_error(f"启动调度器失败: {e}")
-        return {
-            "success": False,
-            "status": "error",
-            "message": f"启动调度器失败: {str(e)}",
-            "scheduler": scheduler.get_status()
-        }
-
-
-@app.post("/api/scheduler/stop")
-async def stop_scheduler_api():
-    """停止调度器"""
-    from auto_scheduler import get_scheduler
-    scheduler = get_scheduler()
-    try:
-        await scheduler.stop()
-        return {
-            "success": True,
-            "status": "stopped",
-            "message": "调度器已停止",
-            "scheduler": scheduler.get_status()
-        }
-    except Exception as e:
-        log_error(f"停止调度器失败: {e}")
-        return {
-            "success": False,
-            "status": "error",
-            "message": f"停止调度器失败: {str(e)}",
-            "scheduler": scheduler.get_status()
-        }
-
-
-@app.post("/api/scheduler/analyze")
-async def analyze_scheduler_api():
-    """Trigger manual analysis immediately."""
-    from auto_scheduler import get_scheduler
-    import asyncio
-    scheduler = get_scheduler()
-    # Check if we can trigger analysis
-    asyncio.create_task(scheduler.trigger_manual_analysis_task())
-    return {"status": "analysis_triggered", "message": "数据分析已触发", "task_id": "scheduler"}
-
-
-@app.post("/api/scheduler/stop_analysis")
-async def stop_analysis_api():
-    """手动停止数据分析任务"""
-    try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
-        result = await scheduler.stop_manual_analysis()
-        if result:
-            return {"status": "stopped", "message": "数据分析任务已停止"}
-        else:
-            return {"status": "idle", "message": "没有正在运行的数据分析任务或无法单独停止定时任务"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"停止数据分析失败: {str(e)}")
-
-
-@app.post("/api/scheduler/config")
-async def scheduler_update_config(config: dict):
-    """更新调度器配置"""
-    try:
-        from auto_scheduler import get_scheduler
-        scheduler = get_scheduler()
-        scheduler.update_config(config)
-        return {"status": "updated", "config": scheduler.config}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
 
 
 if __name__ == "__main__":
