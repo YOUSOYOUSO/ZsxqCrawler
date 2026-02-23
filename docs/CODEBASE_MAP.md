@@ -43,6 +43,15 @@ Analysis and strategy internals:
 - `modules/analyzers/global_pipeline.py`
 - `modules/analyzers/sector_heat.py`
 
+### `modules/shared/`
+
+Shared infrastructure and cross-domain helpers:
+
+- `modules/shared/db_path_manager.py`
+- `modules/shared/logger_config.py`
+- `modules/shared/group_scan_filter.py`
+- `modules/shared/stock_exclusion.py`
+
 ## Compatibility Layer
 
 The original root files are preserved as import shims to avoid breaking existing imports.
@@ -51,6 +60,7 @@ Example:
 
 - `zsxq_database.py` re-exports from `modules.zsxq.zsxq_database`
 - `stock_analyzer.py` re-exports from `modules.analyzers.stock_analyzer`
+- `db_path_manager.py` re-exports from `modules.shared.db_path_manager`
 
 This allows gradual migration without immediate large-scale refactoring.
 
