@@ -4,13 +4,13 @@
 
 This document provides a quick navigation map for humans and AI agents.
 
-## Top-Level Entry Files (keep stable)
+## Top-Level Entry Files (compat shims)
 
 - `main.py`: FastAPI app entry + compatibility glue
 - `auto_scheduler.py`: scheduler orchestration
-- `stock_analyzer.py`: stock analysis engine (current canonical module)
-- `global_analyzer.py`: cross-group analytics
-- `ai_analyzer.py`: AI summary and reasoning workflows
+- `stock_analyzer.py`: compatibility shim for stock analyzer
+- `global_analyzer.py`: compatibility shim for global analytics
+- `ai_analyzer.py`: compatibility shim for AI analysis
 
 ## Categorized Module Directories
 
@@ -33,6 +33,16 @@ ZSXQ crawling and storage internals:
 - `modules/zsxq/zsxq_file_downloader.py`
 - `modules/zsxq/zsxq_interactive_crawler.py`
 
+### `modules/analyzers/`
+
+Analysis and strategy internals:
+
+- `modules/analyzers/stock_analyzer.py`
+- `modules/analyzers/global_analyzer.py`
+- `modules/analyzers/ai_analyzer.py`
+- `modules/analyzers/global_pipeline.py`
+- `modules/analyzers/sector_heat.py`
+
 ## Compatibility Layer
 
 The original root files are preserved as import shims to avoid breaking existing imports.
@@ -40,6 +50,7 @@ The original root files are preserved as import shims to avoid breaking existing
 Example:
 
 - `zsxq_database.py` re-exports from `modules.zsxq.zsxq_database`
+- `stock_analyzer.py` re-exports from `modules.analyzers.stock_analyzer`
 
 This allows gradual migration without immediate large-scale refactoring.
 
