@@ -4,48 +4,11 @@ from typing import Any, Callable, Dict, List
 
 from db_path_manager import get_db_path_manager
 from zsxq_file_downloader import ZSXQFileDownloader
+from api.services.group_filter_service import apply_group_scan_filter, format_group_filter_summary
 
 
 class GlobalFileTaskService:
     """全区文件收集/下载服务（从 main.py 拆出业务流程）。"""
-
-    @staticmethod
-    def _apply_group_scan_filter_for_tasks(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """统一应用白黑名单过滤，供全区任务复用。"""
-        from group_scan_filter import filter_groups
-
-        filtered = filter_groups(groups)
-        cfg = filtered.get("config", {}) or {}
-        return {
-            "all_groups": groups,
-            "included_groups": filtered.get("included_groups", []) or [],
-            "excluded_groups": filtered.get("excluded_groups", []) or [],
-            "reason_counts": filtered.get("reason_counts", {}) or {},
-            "default_action": str(cfg.get("default_action", "include")),
-        }
-
-    @staticmethod
-    def _log_group_filter_summary(
-        task_id: str,
-        add_task_log: Callable[[str, str], None],
-        all_groups: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-        excluded_groups: List[Dict[str, Any]],
-        reason_counts: Dict[str, Any],
-        default_action: str,
-    ) -> None:
-        add_task_log(task_id, f"📋 共发现 {len(all_groups)} 个群组")
-        add_task_log(task_id, f"⚙️ 过滤策略: 未配置群组默认{'纳入' if default_action == 'include' else '排除'}")
-        add_task_log(task_id, f"🧹 过滤后纳入 {len(groups)}/{len(all_groups)} 个群组")
-        if reason_counts:
-            add_task_log(task_id, f"📌 命中统计: {reason_counts}")
-        if excluded_groups:
-            preview = "，".join(
-                f"{g.get('group_id')}({g.get('scan_filter_reason', 'unknown')})"
-                for g in excluded_groups[:20]
-            )
-            suffix = " ..." if len(excluded_groups) > 20 else ""
-            add_task_log(task_id, f"🚫 已排除: {preview}{suffix}")
 
     def run_collect(
         self,
@@ -63,20 +26,19 @@ class GlobalFileTaskService:
 
             manager = get_db_path_manager()
             all_groups = manager.list_all_groups()
-            filtered = self._apply_group_scan_filter_for_tasks(all_groups)
+            filtered = apply_group_scan_filter(all_groups)
             groups = filtered["included_groups"]
             excluded_groups = filtered["excluded_groups"]
             reason_counts = filtered["reason_counts"]
             default_action = filtered["default_action"]
-            self._log_group_filter_summary(
-                task_id,
-                add_task_log,
+            for line in format_group_filter_summary(
                 all_groups,
                 groups,
                 excluded_groups,
                 reason_counts,
                 default_action,
-            )
+            ):
+                add_task_log(task_id, line)
 
             if not groups:
                 update_task(task_id, "completed", "全区收集完成: 过滤后无可扫描群组")
@@ -147,20 +109,19 @@ class GlobalFileTaskService:
 
             manager = get_db_path_manager()
             all_groups = manager.list_all_groups()
-            filtered = self._apply_group_scan_filter_for_tasks(all_groups)
+            filtered = apply_group_scan_filter(all_groups)
             groups = filtered["included_groups"]
             excluded_groups = filtered["excluded_groups"]
             reason_counts = filtered["reason_counts"]
             default_action = filtered["default_action"]
-            self._log_group_filter_summary(
-                task_id,
-                add_task_log,
+            for line in format_group_filter_summary(
                 all_groups,
                 groups,
                 excluded_groups,
                 reason_counts,
                 default_action,
-            )
+            ):
+                add_task_log(task_id, line)
 
             if not groups:
                 update_task(task_id, "completed", "全区下载完成: 过滤后无可扫描群组")
@@ -217,4 +178,3 @@ class GlobalFileTaskService:
         except Exception as e:
             add_task_log(task_id, f"❌ 全区下载异常: {e}")
             update_task(task_id, "failed", f"全区下载失败: {e}")
-

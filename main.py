@@ -5163,20 +5163,6 @@ def _parse_global_crawl_time(raw: Optional[str], field_name: str) -> Optional[da
         )
 
 
-def _apply_group_scan_filter_for_tasks(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """统一应用白黑名单过滤，供全区任务与调度复用。"""
-    from group_scan_filter import filter_groups
-
-    filtered = filter_groups(groups)
-    cfg = filtered.get("config", {}) or {}
-    return {
-        "all_groups": groups,
-        "included_groups": filtered.get("included_groups", []) or [],
-        "excluded_groups": filtered.get("excluded_groups", []) or [],
-        "reason_counts": filtered.get("reason_counts", {}) or {},
-        "default_action": str(cfg.get("default_action", "include")),
-    }
-
 def api_global_crawl(request: GlobalCrawlRequest, background_tasks: BackgroundTasks):
     """全区话题采集（轮询所有群组）"""
     if request.mode == "range":
@@ -5812,7 +5798,9 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_
             if exclude_non_stock is False:
                 add_task_log(task_id, "ℹ️ 参数 exclude_non_stock 已兼容保留，当前版本始终强制应用白黑名单规则")
 
-            filtered = _apply_group_scan_filter_for_tasks(groups)
+            from api.services.group_filter_service import apply_group_scan_filter
+
+            filtered = apply_group_scan_filter(groups)
             groups = filtered["included_groups"]
             excluded_groups = filtered["excluded_groups"]
             reason_counts = filtered["reason_counts"]
