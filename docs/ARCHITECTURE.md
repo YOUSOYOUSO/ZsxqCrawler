@@ -64,6 +64,7 @@ api/
   services/
     task_runtime.py
     global_task_service.py
+    global_crawl_service.py
     global_analyze_service.py
     global_file_task_service.py
     crawl_service.py
