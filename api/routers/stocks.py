@@ -2,9 +2,9 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from ai_analyzer import AIAnalyzer
-from db_path_manager import get_db_path_manager
-from stock_analyzer import StockAnalyzer
+from modules.analyzers.ai_analyzer import AIAnalyzer
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.analyzers.stock_analyzer import StockAnalyzer
 
 from api.schemas.models import AIConfigModel
 

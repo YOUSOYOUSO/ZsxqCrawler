@@ -18,10 +18,10 @@ from pathlib import Path
 import ahocorasick
 import akshare as ak
 
-from db_path_manager import get_db_path_manager
-from logger_config import log_info, log_warning, log_error, log_debug
-from stock_exclusion import is_excluded_stock, build_sql_exclusion_clause
-from sector_heat import build_topic_time_filter, aggregate_sector_heat
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.shared.logger_config import log_info, log_warning, log_error, log_debug
+from modules.shared.stock_exclusion import is_excluded_stock, build_sql_exclusion_clause
+from modules.analyzers.sector_heat import build_topic_time_filter, aggregate_sector_heat
 
 
 # ========== 常量 ==========
@@ -191,6 +191,14 @@ class StockAnalyzer:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_stock_code ON stock_mentions(stock_code)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_mention_date ON stock_mentions(mention_date)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_sm_topic_id ON stock_mentions(topic_id)')
+            try:
+                cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS uq_sm_topic_stock ON stock_mentions(topic_id, stock_code)')
+            except sqlite3.IntegrityError:
+                # 旧库存在重复数据时，唯一索引会创建失败；提示先运行维护脚本清洗历史数据。
+                log_warning(
+                    "检测到 stock_mentions 历史重复数据，暂未启用 uq_sm_topic_stock。"
+                    "请运行 scripts/maintenance/dedup_stock_mentions.py 后重试。"
+                )
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_stock_code ON mention_performance(stock_code)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_mp_mention_date ON mention_performance(mention_date)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_spc_date ON stock_price_cache(trade_date)')
@@ -921,15 +929,17 @@ class StockAnalyzer:
 
             for stock in stocks:
                 cursor.execute('''
-                    INSERT INTO stock_mentions
+                    INSERT OR IGNORE INTO stock_mentions
                     (topic_id, stock_code, stock_name, mention_date, mention_time, context_snippet)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     topic_id, stock['code'], stock['name'],
                     mention_date, create_time or '', stock['context']
                 ))
-                total_mentions += 1
-                stocks_found.add(stock['code'])
+                inserted = int(cursor.rowcount or 0)
+                if inserted > 0:
+                    total_mentions += inserted
+                    stocks_found.add(stock['code'])
 
             if (i + 1) % 20 == 0:
                 conn.commit()
@@ -1039,15 +1049,17 @@ class StockAnalyzer:
 
             for stock in stocks:
                 cursor.execute('''
-                    INSERT INTO stock_mentions
+                    INSERT OR IGNORE INTO stock_mentions
                     (topic_id, stock_code, stock_name, mention_date, mention_time, context_snippet)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     topic_id, stock['code'], stock['name'],
                     mention_date, create_time or '', stock['context']
                 ))
-                total_mentions += 1
-                stocks_found.add(stock['code'])
+                inserted = int(cursor.rowcount or 0)
+                if inserted > 0:
+                    total_mentions += inserted
+                    stocks_found.add(stock['code'])
 
         conn.commit()
         conn.close()

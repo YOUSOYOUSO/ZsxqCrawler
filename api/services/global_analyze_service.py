@@ -1,9 +1,9 @@
 import time
 from typing import Any, Callable, Dict, List
 
-from db_path_manager import get_db_path_manager
-from global_analyzer import get_global_analyzer
-from stock_analyzer import StockAnalyzer
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.analyzers.global_analyzer import get_global_analyzer
+from modules.analyzers.stock_analyzer import StockAnalyzer
 from api.services.group_filter_service import apply_group_scan_filter, format_group_filter_summary
 
 

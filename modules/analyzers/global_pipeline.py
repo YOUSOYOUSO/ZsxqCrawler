@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from db_path_manager import get_db_path_manager
+from modules.shared.db_path_manager import get_db_path_manager
 
 
 LogCallback = Optional[Callable[[str], None]]
@@ -25,7 +25,7 @@ def list_groups(apply_scan_filter: bool = True) -> List[Dict[str, Any]]:
         return groups
 
     try:
-        from group_scan_filter import filter_groups
+        from modules.shared.group_scan_filter import filter_groups
         return filter_groups(groups).get("included_groups", [])
     except Exception:
         # Fail-open to avoid scheduler hard stop on transient config read failure.
@@ -43,7 +43,7 @@ def run_group_incremental_pipeline(
 ) -> Dict[str, Any]:
     """Run incremental crawl -> extract -> optional analyze for a single group."""
     from main import get_crawler_for_group
-    from stock_analyzer import StockAnalyzer
+    from modules.analyzers.stock_analyzer import StockAnalyzer
 
     result: Dict[str, Any] = {
         "group_id": group_id,

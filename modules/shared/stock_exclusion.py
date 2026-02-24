@@ -15,9 +15,13 @@ from typing import Dict, List, Tuple, Any
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXCLUDE_FILE = str(PROJECT_ROOT / "stock_exclude.json")
+EXCLUDE_FILES = [
+    PROJECT_ROOT / "config" / "stock_exclude.json",
+    PROJECT_ROOT / "stock_exclude.json",  # legacy fallback
+]
 
 _cache_mtime: float = -1.0
+_cache_path: str = ""
 _cache_rules: Dict[str, set] = {
     "keywords": set(),
     "stock_names": set(),
@@ -52,16 +56,22 @@ def _normalize_rules(payload: Any) -> Dict[str, set]:
 
 
 def _load_rules() -> Dict[str, set]:
-    global _cache_mtime, _cache_rules
-    path = EXCLUDE_FILE
+    global _cache_mtime, _cache_path, _cache_rules
+    path_obj = None
+    for candidate in EXCLUDE_FILES:
+        if candidate.exists():
+            path_obj = candidate
+            break
 
-    if not os.path.exists(path):
+    if path_obj is None:
         _cache_mtime = -1.0
+        _cache_path = ""
         _cache_rules = {"keywords": set(), "stock_names": set(), "stock_codes": set()}
         return _cache_rules
 
+    path = str(path_obj)
     mtime = os.path.getmtime(path)
-    if mtime == _cache_mtime:
+    if path == _cache_path and mtime == _cache_mtime:
         return _cache_rules
 
     try:
@@ -69,9 +79,11 @@ def _load_rules() -> Dict[str, set]:
             payload = json.load(f)
         _cache_rules = _normalize_rules(payload)
         _cache_mtime = mtime
+        _cache_path = path
     except Exception:
         _cache_rules = {"keywords": set(), "stock_names": set(), "stock_codes": set()}
         _cache_mtime = mtime
+        _cache_path = path
     return _cache_rules
 
 

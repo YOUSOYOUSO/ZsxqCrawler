@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 def apply_group_scan_filter(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
     """统一应用白黑名单过滤，供全区任务与调度复用。"""
-    from group_scan_filter import filter_groups
+    from modules.shared.group_scan_filter import filter_groups
 
     filtered = filter_groups(groups)
     cfg = filtered.get("config", {}) or {}

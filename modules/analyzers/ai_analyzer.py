@@ -20,7 +20,7 @@ except ImportError:
     except ImportError:
         tomllib = None  # type: ignore
 
-from logger_config import log_info, log_warning, log_error
+from modules.shared.logger_config import log_info, log_warning, log_error
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -93,7 +93,7 @@ class AIAnalyzer:
         
         # 如果没有提供 db_path 且没有 group_id，则假定为全局模式，使用全局 AI 数据库
         if not db_path and not group_id:
-            from db_path_manager import get_db_path_manager
+            from modules.shared.db_path_manager import get_db_path_manager
             self.db_path = get_db_path_manager().get_global_ai_db_path()
         else:
             self.db_path = db_path
@@ -125,7 +125,7 @@ class AIAnalyzer:
                     'from_cache': True
                 }
 
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
 
         signals = analyzer.get_global_signals(lookback_days=lookback_days, min_mentions=2)
@@ -205,7 +205,7 @@ class AIAnalyzer:
                     'from_cache': True
                 }
 
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
         analyzer = get_global_analyzer()
 
         ranking = analyzer.get_global_win_rate(min_mentions=2, limit=top_n)
@@ -474,7 +474,7 @@ class AIAnalyzer:
                 }
 
         # 获取股票数据
-        from stock_analyzer import StockAnalyzer
+        from modules.analyzers.stock_analyzer import StockAnalyzer
         analyzer = StockAnalyzer(group_id=self.group_id)
         events_data = analyzer.get_stock_events(stock_code)
 
@@ -537,7 +537,7 @@ class AIAnalyzer:
                     'from_cache': True
                 }
 
-        from stock_analyzer import StockAnalyzer
+        from modules.analyzers.stock_analyzer import StockAnalyzer
         analyzer = StockAnalyzer(group_id=self.group_id)
 
         signals = analyzer.get_signals(lookback_days=lookback_days, min_mentions=1)
@@ -597,7 +597,7 @@ class AIAnalyzer:
                     'from_cache': True
                 }
 
-        from stock_analyzer import StockAnalyzer
+        from modules.analyzers.stock_analyzer import StockAnalyzer
         analyzer = StockAnalyzer(group_id=self.group_id)
 
         result = analyzer.get_win_rate_ranking(min_mentions=2, limit=top_n, page_size=top_n)

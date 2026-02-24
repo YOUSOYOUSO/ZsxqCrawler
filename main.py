@@ -26,16 +26,16 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 # 导入现有的业务逻辑模块
-from zsxq_interactive_crawler import ZSXQInteractiveCrawler, load_config
-from zsxq_database import ZSXQDatabase
-from zsxq_file_database import ZSXQFileDatabase
-from db_path_manager import get_db_path_manager
+from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler, load_config
+from modules.zsxq.zsxq_database import ZSXQDatabase
+from modules.zsxq.zsxq_file_database import ZSXQFileDatabase
+from modules.shared.db_path_manager import get_db_path_manager
 from image_cache_manager import get_image_cache_manager
 # 使用SQL账号管理器
-from accounts_sql_manager import get_accounts_sql_manager
-from account_info_db import get_account_info_db
-from zsxq_columns_database import ZSXQColumnsDatabase
-from logger_config import log_info, log_warning, log_error, log_exception, log_debug, ensure_configured
+from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
+from modules.accounts.account_info_db import get_account_info_db
+from modules.zsxq.zsxq_columns_database import ZSXQColumnsDatabase
+from modules.shared.logger_config import log_info, log_warning, log_error, log_exception, log_debug, ensure_configured
 from api.app_factory import register_core_routers
 from api.deps.container import get_task_runtime
 from api.schemas.models import (
@@ -1129,8 +1129,8 @@ def run_file_download_task(task_id: str, group_id: str, max_files: Optional[int]
         cookie = get_cookie_for_group(group_id)
 
         # 使用传入的group_id而不是配置文件中的固定值
-        from zsxq_file_downloader import ZSXQFileDownloader
-        from db_path_manager import get_db_path_manager
+        from modules.zsxq.zsxq_file_downloader import ZSXQFileDownloader
+        from modules.shared.db_path_manager import get_db_path_manager
 
         path_manager = get_db_path_manager()
         db_path = path_manager.get_files_db_path(group_id)
@@ -1215,8 +1215,8 @@ def run_single_file_download_task(task_id: str, group_id: str, file_id: int):
         # 自动匹配该群组所属账号，获取对应Cookie
         cookie = get_cookie_for_group(group_id)
 
-        from zsxq_file_downloader import ZSXQFileDownloader
-        from db_path_manager import get_db_path_manager
+        from modules.zsxq.zsxq_file_downloader import ZSXQFileDownloader
+        from modules.shared.db_path_manager import get_db_path_manager
 
         path_manager = get_db_path_manager()
         db_path = path_manager.get_files_db_path(group_id)
@@ -1340,8 +1340,8 @@ def run_single_file_download_task_with_info(task_id: str, group_id: str, file_id
         # 自动匹配该群组所属账号，获取对应Cookie
         cookie = get_cookie_for_group(group_id)
 
-        from zsxq_file_downloader import ZSXQFileDownloader
-        from db_path_manager import get_db_path_manager
+        from modules.zsxq.zsxq_file_downloader import ZSXQFileDownloader
+        from modules.shared.db_path_manager import get_db_path_manager
 
         path_manager = get_db_path_manager()
         db_path = path_manager.get_files_db_path(group_id)
@@ -1822,8 +1822,8 @@ async def collect_files(group_id: str, background_tasks: BackgroundTasks):
                 # 为每个任务创建独立的文件下载器实例
                 cookie = get_cookie_for_group(group_id)
 
-                from zsxq_file_downloader import ZSXQFileDownloader
-                from db_path_manager import get_db_path_manager
+                from modules.zsxq.zsxq_file_downloader import ZSXQFileDownloader
+                from modules.shared.db_path_manager import get_db_path_manager
 
                 path_manager = get_db_path_manager()
                 db_path = path_manager.get_files_db_path(group_id)
@@ -2212,7 +2212,7 @@ async def clear_topic_database(group_id: str):
 
                 # 清理全局聚合缓存，避免 dashboard 统计延迟
                 try:
-                    from global_analyzer import get_global_analyzer
+                    from modules.analyzers.global_analyzer import get_global_analyzer
                     get_global_analyzer().invalidate_cache()
                     print("✅ 全局分析缓存已失效")
                     delete_stats["cache_invalidated"] = True
@@ -2369,7 +2369,7 @@ async def refresh_local_groups():
     try:
         ids = await asyncio.to_thread(scan_local_groups)
         try:
-            from global_analyzer import get_global_analyzer
+            from modules.analyzers.global_analyzer import get_global_analyzer
             get_global_analyzer().invalidate_cache()
         except Exception:
             pass
@@ -5100,7 +5100,7 @@ async def get_column_topic_full_comments(group_id: str, topic_id: int):
 
 # ========== 股票舆情分析 API ==========
 
-from stock_analyzer import StockAnalyzer
+from modules.analyzers.stock_analyzer import StockAnalyzer
 
 
 @app.post("/api/groups/{group_id}/stock/scan")
@@ -5314,8 +5314,8 @@ def api_global_analyze_performance(background_tasks: BackgroundTasks, force: boo
 async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = None):
     """清理被 stock_exclude.json 命中的历史股票数据"""
     try:
-        from stock_exclusion import build_sql_exclusion_clause
-        from db_path_manager import get_db_path_manager
+        from modules.shared.stock_exclusion import build_sql_exclusion_clause
+        from modules.shared.db_path_manager import get_db_path_manager
 
         if scope not in ("all", "group"):
             raise HTTPException(status_code=400, detail="scope 仅支持 all 或 group")
@@ -5406,7 +5406,7 @@ async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = 
             })
 
         try:
-            from global_analyzer import get_global_analyzer
+            from modules.analyzers.global_analyzer import get_global_analyzer
             get_global_analyzer().invalidate_cache()
         except Exception:
             pass
@@ -5427,7 +5427,7 @@ async def cleanup_excluded_stocks(scope: str = "all", group_id: Optional[str] = 
 async def get_global_scan_filter_config():
     """获取非股票群排除规则（手动白黑名单）"""
     try:
-        from group_scan_filter import get_filter_config, CONFIG_FILE
+        from modules.shared.group_scan_filter import get_filter_config, CONFIG_FILE
         data = get_filter_config()
         data["source_file"] = CONFIG_FILE
         return data
@@ -5439,7 +5439,7 @@ async def get_global_scan_filter_config():
 async def update_global_scan_filter_config(request: ScanFilterConfigRequest):
     """更新非股票群排除规则（手动白黑名单）"""
     try:
-        from group_scan_filter import save_filter_config
+        from modules.shared.group_scan_filter import save_filter_config
         data = save_filter_config(
             default_action=request.default_action,
             whitelist_group_ids=request.whitelist_group_ids,
@@ -5462,8 +5462,8 @@ async def update_global_scan_filter_config(request: ScanFilterConfigRequest):
 async def preview_global_scan_filter(exclude_non_stock: bool = True):
     """预览当前扫描过滤命中结果"""
     try:
-        from db_path_manager import get_db_path_manager
-        from group_scan_filter import decide_group
+        from modules.shared.db_path_manager import get_db_path_manager
+        from modules.shared.group_scan_filter import decide_group
 
         manager = get_db_path_manager()
         groups = manager.list_all_groups()
@@ -5507,8 +5507,8 @@ async def preview_global_scan_filter(exclude_non_stock: bool = True):
 async def preview_blacklist_cleanup():
     """预览黑名单群组可清理的分析数据规模。"""
     try:
-        from db_path_manager import get_db_path_manager
-        from group_scan_filter import get_filter_config
+        from modules.shared.db_path_manager import get_db_path_manager
+        from modules.shared.group_scan_filter import get_filter_config
         import sqlite3
 
         cfg = get_filter_config()
@@ -5587,8 +5587,8 @@ async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
 
     def _cleanup_task(task_id: str):
         try:
-            from db_path_manager import get_db_path_manager
-            from group_scan_filter import get_filter_config
+            from modules.shared.db_path_manager import get_db_path_manager
+            from modules.shared.group_scan_filter import get_filter_config
             import sqlite3
 
             update_task(task_id, "running", "开始清理黑名单历史分析数据...")
@@ -5657,7 +5657,7 @@ async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
                         conn.close()
 
             try:
-                from global_analyzer import get_global_analyzer
+                from modules.analyzers.global_analyzer import get_global_analyzer
                 get_global_analyzer().invalidate_cache()
                 add_task_log(task_id, "🔄 全局统计缓存已刷新")
             except Exception:
@@ -5786,8 +5786,8 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_
             update_task(task_id, "running", "准备开始全局扫描...")
             add_task_log(task_id, "🚀 开始全局股票提及扫描...")
             
-            from db_path_manager import get_db_path_manager
-            from global_pipeline import run_serial_incremental_pipeline
+            from modules.shared.db_path_manager import get_db_path_manager
+            from modules.analyzers.global_pipeline import run_serial_incremental_pipeline
             
             manager = get_db_path_manager()
             groups = manager.list_all_groups()
@@ -5845,7 +5845,7 @@ def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_
                 
                 # 触发全局分析器缓存失效
                 try:
-                    from global_analyzer import get_global_analyzer
+                    from modules.analyzers.global_analyzer import get_global_analyzer
                     get_global_analyzer().invalidate_cache()
                     add_task_log(task_id, "🔄 全局统计缓存已刷新")
                 except:

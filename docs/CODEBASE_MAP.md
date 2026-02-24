@@ -11,13 +11,17 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/global_analyze_service.py`: owns global performance analyze flow
 - `api/services/global_file_task_service.py`: owns global file collect/download flows
 
-## Top-Level Entry Files (compat shims)
+## Top-Level Entry Files
 
 - `main.py`: FastAPI app entry + compatibility glue
 - `auto_scheduler.py`: scheduler orchestration
-- `stock_analyzer.py`: compatibility shim for stock analyzer
-- `global_analyzer.py`: compatibility shim for global analytics
-- `ai_analyzer.py`: compatibility shim for AI analysis
+
+## Runtime Config Assets
+
+- `config/stock_exclude.json`: stock exclusion rules (primary)
+- `stock_exclude.json`: legacy fallback path (read-only compatibility)
+- `group_scan_filter.json`: global group filter configuration
+- `stock_aliases.json`: stock alias dictionary
 
 ## Categorized Module Directories
 
@@ -59,20 +63,8 @@ Shared infrastructure and cross-domain helpers:
 - `modules/shared/group_scan_filter.py`
 - `modules/shared/stock_exclusion.py`
 
-## Compatibility Layer
-
-The original root files are preserved as import shims to avoid breaking existing imports.
-
-Example:
-
-- `zsxq_database.py` re-exports from `modules.zsxq.zsxq_database`
-- `stock_analyzer.py` re-exports from `modules.analyzers.stock_analyzer`
-- `db_path_manager.py` re-exports from `modules.shared.db_path_manager`
-
-This allows gradual migration without immediate large-scale refactoring.
-
 ## Migration Direction
 
 - New internal code should prefer `modules/*` paths.
-- Existing imports can be migrated gradually.
-- Remove root shim files only after all references are migrated.
+- Internal imports should directly use `modules/*` and `api/*` paths.
+- Root compatibility shim files have been removed.

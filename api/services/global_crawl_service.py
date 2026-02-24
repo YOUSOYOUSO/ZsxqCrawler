@@ -3,8 +3,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List
 
-from db_path_manager import get_db_path_manager
-from zsxq_interactive_crawler import ZSXQInteractiveCrawler
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler
 from api.services.group_filter_service import apply_group_scan_filter, format_group_filter_summary
 
 

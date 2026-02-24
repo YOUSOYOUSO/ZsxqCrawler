@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from db_path_manager import get_db_path_manager
-from logger_config import log_info
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.shared.logger_config import log_info
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -232,7 +232,7 @@ class AutoScheduler:
             self.log(f"📡 开始时点任务: {triggered_at.strftime('%H:%M')}")
 
             try:
-                from global_pipeline import list_groups, run_serial_incremental_pipeline
+                from modules.analyzers.global_pipeline import list_groups, run_serial_incremental_pipeline
 
                 all_groups = list_groups(apply_scan_filter=False)
                 groups, excluded_groups, reason_counts, default_action = self._apply_group_scan_filter(all_groups)
@@ -302,7 +302,7 @@ class AutoScheduler:
                 self.log(f"✅ 时点任务完成：成功 {len(successes)}/{len(groups)}，失败 {len(failures)}，耗时 {elapsed}s")
 
                 try:
-                    from global_analyzer import get_global_analyzer
+                    from modules.analyzers.global_analyzer import get_global_analyzer
                     get_global_analyzer().invalidate_cache()
                     self.log("🔄 全局缓存已刷新")
                 except Exception as e:
@@ -332,7 +332,7 @@ class AutoScheduler:
         async def _run_and_track():
             self.stats["is_calculating"] = True
             try:
-                from stock_analyzer import StockAnalyzer
+                from modules.analyzers.stock_analyzer import StockAnalyzer
                 groups = self._get_active_groups()
                 for idx, group in enumerate(groups, 1):
                     if self.state == SchedulerState.STOPPED:
@@ -403,7 +403,7 @@ class AutoScheduler:
 
     def _apply_group_scan_filter(self, groups: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[str], Dict[str, int], str]:
         try:
-            from group_scan_filter import filter_groups
+            from modules.shared.group_scan_filter import filter_groups
             filtered = filter_groups(groups)
             cfg = filtered.get("config", {}) or {}
             default_action = str(cfg.get("default_action", "include"))

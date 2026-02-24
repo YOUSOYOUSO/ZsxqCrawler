@@ -3,6 +3,7 @@
 This folder stores one-off maintenance and troubleshooting scripts that are not part of the runtime service.
 
 - `check_sectors.py`
+- `dedup_stock_mentions.py`
 - `find_topic.py`
 - `fix_topic_id.py`
 - `fix_topic_id_v2.py`

@@ -15,10 +15,10 @@ from collections import defaultdict
 import concurrent.futures
 import time
 
-from db_path_manager import get_db_path_manager
-from logger_config import log_info, log_warning, log_error
-from stock_exclusion import is_excluded_stock
-from sector_heat import build_topic_time_filter, aggregate_sector_heat, match_sector_keywords
+from modules.shared.db_path_manager import get_db_path_manager
+from modules.shared.logger_config import log_info, log_warning, log_error
+from modules.shared.stock_exclusion import is_excluded_stock
+from modules.analyzers.sector_heat import build_topic_time_filter, aggregate_sector_heat, match_sector_keywords
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -66,7 +66,7 @@ class GlobalAnalyzer:
     def _get_scan_filter_fingerprint(self) -> str:
         """基于 group_scan_filter 配置生成口径指纹。"""
         try:
-            from group_scan_filter import CONFIG_FILE
+            from modules.shared.group_scan_filter import CONFIG_FILE
             if not os.path.exists(CONFIG_FILE):
                 return "nofile"
             mtime = os.path.getmtime(CONFIG_FILE)
@@ -83,7 +83,7 @@ class GlobalAnalyzer:
         """按白黑名单规则过滤后的群组列表。"""
         groups = self.db_path_manager.list_all_groups()
         try:
-            from group_scan_filter import filter_groups
+            from modules.shared.group_scan_filter import filter_groups
             return filter_groups(groups).get("included_groups", []) or []
         except Exception as e:
             log_warning(f"读取群组过滤规则失败，回退全量群组: {e}")
@@ -150,7 +150,7 @@ class GlobalAnalyzer:
     def _get_whitelist_group_ids(self) -> List[str]:
         """读取全局扫描白名单群组 ID 列表"""
         try:
-            from group_scan_filter import get_filter_config
+            from modules.shared.group_scan_filter import get_filter_config
             cfg = get_filter_config()
             values = cfg.get("whitelist_group_ids", []) if isinstance(cfg, dict) else []
             if not isinstance(values, list):
@@ -289,8 +289,10 @@ class GlobalAnalyzer:
         cutoff_date = cutoff.strftime('%Y-%m-%d')
 
         word_counts: Dict[str, int] = defaultdict(int)
+        # 同一群组内同一话题下同一股票仅计一次，避免重复提及抬高热度
+        seen_topic_stock: set[tuple[str, Any, str]] = set()
         query = '''
-            SELECT stock_name, mention_time, mention_date
+            SELECT topic_id, stock_code, stock_name, mention_time, mention_date
             FROM stock_mentions
             WHERE mention_date >= ? AND stock_name != '' AND stock_name IS NOT NULL
         '''
@@ -308,15 +310,26 @@ class GlobalAnalyzer:
                 rows = cursor.fetchall()
 
                 for row in rows:
-                    stock_name = row[0] if len(row) > 0 else None
-                    mention_time = row[1] if len(row) > 1 else None
-                    mention_date = row[2] if len(row) > 2 else None
+                    topic_id = row[0] if len(row) > 0 else None
+                    stock_code = row[1] if len(row) > 1 else None
+                    stock_name = row[2] if len(row) > 2 else None
+                    mention_time = row[3] if len(row) > 3 else None
+                    mention_date = row[4] if len(row) > 4 else None
 
                     dt = self._parse_mention_datetime(mention_time, mention_date)
                     if dt is None or dt < cutoff:
                         continue
                     if is_excluded_stock(None, stock_name):
                         continue
+
+                    dedup_key = (
+                        group_id,
+                        topic_id,
+                        str(stock_code or stock_name or '').strip().upper(),
+                    )
+                    if dedup_key in seen_topic_stock:
+                        continue
+                    seen_topic_stock.add(dedup_key)
                     word_counts[str(stock_name)] += 1
             except Exception as e:
                 log_warning(f"热词统计失败(group={group_id}): {e}")
@@ -831,7 +844,7 @@ class GlobalAnalyzer:
 
     def get_global_sector_heat(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
         """跨群组板块热度聚合（按帖子文本计数）。"""
-        from stock_analyzer import SECTOR_KEYWORDS
+        from modules.analyzers.stock_analyzer import SECTOR_KEYWORDS
         cache_key = self._scoped_cache_key(
             f'global_sector_heat_posts_v2_{start_date or ""}_{end_date or ""}'
         )
@@ -1050,7 +1063,7 @@ class GlobalAnalyzer:
                                  end_date: Optional[str] = None, page: int = 1,
                                  page_size: int = 20) -> Dict[str, Any]:
         """全局板块话题明细（跨群组）"""
-        from stock_analyzer import SECTOR_KEYWORDS
+        from modules.analyzers.stock_analyzer import SECTOR_KEYWORDS
 
         if sector not in SECTOR_KEYWORDS:
             raise ValueError(f"未知板块: {sector}")

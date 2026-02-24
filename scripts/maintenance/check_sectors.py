@@ -1,4 +1,4 @@
-from global_analyzer import get_global_analyzer
+from modules.analyzers.global_analyzer import get_global_analyzer
 import json
 
 analyzer = get_global_analyzer()

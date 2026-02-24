@@ -3,8 +3,8 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from ai_analyzer import AIAnalyzer
-from logger_config import log_error, log_info
+from modules.analyzers.ai_analyzer import AIAnalyzer
+from modules.shared.logger_config import log_error, log_info
 
 router = APIRouter(tags=["global"])
 
@@ -17,7 +17,7 @@ def _get_global_ai_analyzer() -> AIAnalyzer:
 async def global_stats():
     """全局统计概览"""
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_stats()
@@ -56,7 +56,7 @@ async def get_global_hot_words(
         if not parsed_fallback_windows:
             parsed_fallback_windows = [24, 36, 48, 168]
 
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_hot_words(
@@ -97,7 +97,7 @@ async def get_global_win_rate(
 ):
     start_time = time.time()
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         data = analyzer.get_global_win_rate(
@@ -123,7 +123,7 @@ async def get_global_win_rate(
 async def global_stock_events(stock_code: str):
     """全局股票事件详情"""
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_stock_events(stock_code)
@@ -134,7 +134,7 @@ async def global_stock_events(stock_code: str):
 @router.get("/api/global/sector-heat")
 async def get_global_sector_heat(start_date: Optional[str] = None, end_date: Optional[str] = None):
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_sector_heat(start_date=start_date, end_date=end_date)
@@ -151,7 +151,7 @@ async def get_global_sector_topics(
     page_size: int = 20,
 ):
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_sector_topics(
@@ -170,7 +170,7 @@ async def get_global_sector_topics(
 @router.get("/api/global/signals")
 async def global_signals(lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None):
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_global_signals(lookback_days, min_mentions, start_date=start_date, end_date=end_date)
@@ -181,7 +181,7 @@ async def global_signals(lookback_days: int = 7, min_mentions: int = 2, start_da
 @router.get("/api/global/groups")
 async def global_groups_overview():
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_groups_overview()
@@ -192,7 +192,7 @@ async def global_groups_overview():
 @router.get("/api/global/topics")
 async def global_whitelist_topics(page: int = 1, per_page: int = 20, search: Optional[str] = None):
     try:
-        from global_analyzer import get_global_analyzer
+        from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
         return analyzer.get_whitelist_topic_mentions(page=page, per_page=per_page, search=search)

@@ -8,8 +8,8 @@
 
 import os
 import json
-from accounts_manager import get_accounts, get_group_account_mapping
-from accounts_sql_manager import get_accounts_sql_manager
+from modules.accounts.accounts_manager import get_accounts, get_group_account_mapping
+from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
 from loguru import logger
 
 

@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException
 
-from logger_config import log_error
+from modules.shared.logger_config import log_error
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
