@@ -6,14 +6,12 @@
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || 'http://localhost:8208').replace(/\/$/, '');
 
 import type {
-  ApiResponse,
   WinRateResponse,
   Task,
   TaskSummaryResponse,
   DatabaseStats,
   Topic,
   FileItem,
-  FileStatus,
   PaginatedResponse,
   Group,
   GroupStats,
@@ -21,28 +19,22 @@ import type {
   AccountSelf,
   GlobalHotWordItem,
   GlobalHotWordResponse,
-  StockEvent,
   StockEventsResponse,
   ColumnInfo,
   ColumnTopic,
   ColumnTopicDetail,
-  ColumnImage,
-  ColumnVideo,
-  ColumnFile,
   ColumnComment,
   ColumnsStats,
   ColumnsFetchSettings
 } from './api-types';
 
 export type {
-  ApiResponse,
   WinRateResponse,
   Task,
   TaskSummaryResponse,
   DatabaseStats,
   Topic,
   FileItem,
-  FileStatus,
   PaginatedResponse,
   Group,
   GroupStats,
@@ -50,14 +42,10 @@ export type {
   AccountSelf,
   GlobalHotWordItem,
   GlobalHotWordResponse,
-  StockEvent,
   StockEventsResponse,
   ColumnInfo,
   ColumnTopic,
   ColumnTopicDetail,
-  ColumnImage,
-  ColumnVideo,
-  ColumnFile,
   ColumnComment,
   ColumnsStats,
   ColumnsFetchSettings
@@ -68,6 +56,7 @@ export type {
 // API客户端类
 class ApiClient {
   private baseUrl: string;
+  private inFlightGetRequests = new Map<string, Promise<any>>();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -78,21 +67,37 @@ class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-      ...options,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+    const method = (options.method || 'GET').toUpperCase();
+    const isDedupableGet = method === 'GET' && !options.body && !options.signal;
+    const dedupeKey = isDedupableGet ? `${method}:${url}` : '';
+    if (isDedupableGet) {
+      const existing = this.inFlightGetRequests.get(dedupeKey);
+      if (existing) return existing as Promise<T>;
     }
 
-    return response.json();
+    const requestPromise = (async () => {
+      const response = await fetch(url, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...options.headers,
+        },
+        ...options,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      return response.json();
+    })();
+
+    if (isDedupableGet) {
+      this.inFlightGetRequests.set(dedupeKey, requestPromise);
+      requestPromise.finally(() => this.inFlightGetRequests.delete(dedupeKey));
+    }
+
+    return requestPromise;
   }
 
   // 健康检查
@@ -682,22 +687,22 @@ class ApiClient {
     return this.request(`/api/groups/${groupId}/stock/stats`);
   }
 
-  async getStockTopics(groupId: number | string, page: number = 1, perPage: number = 20) {
+  async getStockTopics(groupId: number | string, page: number = 1, perPage: number = 20, signal?: AbortSignal) {
     const q = new URLSearchParams({ page: String(page), per_page: String(perPage) });
-    return this.request(`/api/groups/${groupId}/stock/topics?${q.toString()}`);
+    return this.request(`/api/groups/${groupId}/stock/topics?${q.toString()}`, { signal });
   }
 
   async getStockMentions(groupId: number | string, params?: {
     stock_code?: string; page?: number; per_page?: number;
     sort_by?: string; order?: string;
-  }): Promise<any> {
+  }, signal?: AbortSignal): Promise<any> {
     const q = new URLSearchParams();
     if (params?.stock_code) q.append('stock_code', params.stock_code);
     if (params?.page) q.append('page', params.page.toString());
     if (params?.per_page) q.append('per_page', params.per_page.toString());
     if (params?.sort_by) q.append('sort_by', params.sort_by);
     if (params?.order) q.append('order', params.order);
-    return this.request(`/api/groups/${groupId}/stock/mentions?${q}`);
+    return this.request(`/api/groups/${groupId}/stock/mentions?${q}`, { signal });
   }
 
   async getStockEvents(groupId: number | string, stockCode: string): Promise<StockEventsResponse> {
@@ -932,8 +937,8 @@ class ApiClient {
     return this.request(`/api/global/signals?${q.toString()}`);
   }
 
-  async getGlobalGroups(): Promise<any> {
-    return this.request('/api/global/groups');
+  async getGlobalGroups(signal?: AbortSignal): Promise<any> {
+    return this.request('/api/global/groups', { signal });
   }
 
   async getGlobalTopics(page: number = 1, perPage: number = 20, search?: string): Promise<any> {

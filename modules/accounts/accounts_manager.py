@@ -6,30 +6,28 @@ import json
 import time
 import threading
 from typing import Dict, Any, List, Optional, Tuple
+from modules.shared.paths import PROJECT_ROOT, get_config_path
 
 _lock = threading.Lock()
 
 
-def _get_project_root() -> str:
-    """
-    在当前文件夹向上查找包含 config.toml 的目录，作为项目根目录。
-    找不到则返回当前文件所在目录。
-    """
-    cur = os.path.abspath(os.path.dirname(__file__))
-    while True:
-        if os.path.exists(os.path.join(cur, "config.toml")):
-            return cur
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return os.path.abspath(os.path.dirname(__file__))
-        cur = parent
+_ACCOUNTS_FILE = str(get_config_path("accounts.json"))
+_LEGACY_ACCOUNTS_FILE = str(PROJECT_ROOT / "accounts.json")
 
 
-_ACCOUNTS_FILE = os.path.join(_get_project_root(), "accounts.json")
+def _migrate_legacy_store() -> None:
+    """首次使用时，将根目录旧文件迁移到 config 目录。"""
+    if os.path.exists(_ACCOUNTS_FILE) or not os.path.exists(_LEGACY_ACCOUNTS_FILE):
+        return
+    with _lock:
+        if os.path.exists(_ACCOUNTS_FILE) or not os.path.exists(_LEGACY_ACCOUNTS_FILE):
+            return
+        os.replace(_LEGACY_ACCOUNTS_FILE, _ACCOUNTS_FILE)
 
 
 def _ensure_store() -> None:
     """确保账户存储文件存在"""
+    _migrate_legacy_store()
     if not os.path.exists(_ACCOUNTS_FILE):
         with _lock:
             # 双重检查

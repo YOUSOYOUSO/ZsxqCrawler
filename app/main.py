@@ -19,18 +19,20 @@ import uvicorn
 import mimetypes
 import random
 import time
+from pathlib import Path
 
-# 添加项目根目录到Python路径（现在main.py就在根目录）
-project_root = os.path.dirname(os.path.abspath(__file__))
+# 添加项目根目录到Python路径（app/main.py 在 app 目录下）
+project_root = str(Path(__file__).resolve().parents[1])
 if project_root not in sys.path:
     sys.path.append(project_root)
+from modules.shared.paths import get_config_path
 
 # 导入现有的业务逻辑模块
 from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler, load_config
 from modules.zsxq.zsxq_database import ZSXQDatabase
 from modules.zsxq.zsxq_file_database import ZSXQFileDatabase
 from modules.shared.db_path_manager import get_db_path_manager
-from image_cache_manager import get_image_cache_manager
+from app.runtime.image_cache_manager import get_image_cache_manager
 # 使用SQL账号管理器
 from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
 from modules.accounts.account_info_db import get_account_info_db
@@ -121,7 +123,7 @@ def scheduler_status_callback(status: str, message: str):
 
 # 延迟导入并初始化调度器回调
 try:
-    from auto_scheduler import get_scheduler
+    from app.scheduler.auto_scheduler import get_scheduler
     sc = get_scheduler()
     sc.set_log_callback(scheduler_log_callback)
     sc.set_status_callback(scheduler_status_callback)
@@ -257,7 +259,7 @@ def get_crawler(log_callback=None) -> ZSXQInteractiveCrawler:
         group_id = auth_config.get('group_id', '')
 
         if cookie == "your_cookie_here" or group_id == "your_group_id_here" or not cookie or not group_id:
-            raise HTTPException(status_code=400, detail="请先在config.toml中配置Cookie和群组ID")
+            raise HTTPException(status_code=400, detail="请先在 config/app.toml 中配置Cookie和群组ID")
 
         # 使用路径管理器获取数据库路径
         path_manager = get_db_path_manager()
@@ -277,7 +279,7 @@ def get_crawler_for_group(group_id: str, log_callback=None) -> ZSXQInteractiveCr
     cookie = get_cookie_for_group(group_id)
 
     if not cookie or cookie == "your_cookie_here":
-        raise HTTPException(status_code=400, detail="未找到可用Cookie，请先在账号管理或config.toml中配置")
+        raise HTTPException(status_code=400, detail="未找到可用Cookie，请先在账号管理或 config/app.toml 中配置")
 
     # 使用路径管理器获取指定群组的数据库路径
     path_manager = get_db_path_manager()
@@ -296,7 +298,7 @@ def get_primary_cookie() -> Optional[str]:
     """
     获取当前优先使用的Cookie：
     1. 若账号管理中存在账号，则优先使用第一个账号的Cookie
-    2. 否则回退到 config.toml 中的 Cookie（若已配置）
+    2. 否则回退到 config/app.toml 中的 Cookie（若已配置）
     """
     # 1. 第一个账号
     try:
@@ -309,7 +311,7 @@ def get_primary_cookie() -> Optional[str]:
     except Exception:
         pass
 
-    # 2. config.toml 中的 Cookie
+    # 2. config/app.toml 中的 Cookie
     try:
         config = load_config()
         if not config:
@@ -325,7 +327,7 @@ def get_primary_cookie() -> Optional[str]:
 
 
 def is_configured() -> bool:
-    """检查是否已配置至少一个可用的认证Cookie（账号管理或config.toml 均可）"""
+    """检查是否已配置至少一个可用的认证Cookie（账号管理或 config/app.toml 均可）"""
     return get_primary_cookie() is not None
 
 def create_task(task_type: str, description: str) -> str:
@@ -430,7 +432,7 @@ def _task_category(task_type: str) -> str:
         return "crawl"
     if t.startswith("global_files_collect") or t.startswith("global_files_download"):
         return "files"
-    if t.startswith("global_analyze_performance") or t.startswith("stock_scan_"):
+    if t.startswith("global_analyze_performance") or t.startswith("global_analyze") or t.startswith("stock_scan_"):
         return "analyze"
     return "other"
 
@@ -469,7 +471,7 @@ def _build_task_summary() -> Dict[str, Any]:
         latest_by_type[category] = terminal_items[0] if terminal_items else items_sorted[0]
 
     try:
-        from auto_scheduler import get_scheduler
+        from app.scheduler.auto_scheduler import get_scheduler
         scheduler_snapshot = get_scheduler().get_status()
     except Exception:
         scheduler_snapshot = {}
@@ -509,7 +511,7 @@ def stop_task(task_id: str) -> bool:
     # 特殊处理调度器：调用其内部 stop 方法
     if task_id == "scheduler":
         try:
-            from auto_scheduler import get_scheduler
+            from app.scheduler.auto_scheduler import get_scheduler
             update_task(task_id, "stopping", "调度器停止请求已发送，正在收尾...")
             # 使用 create_task 异步停止，避免阻塞 API
             asyncio.create_task(get_scheduler().stop())
@@ -612,6 +614,7 @@ async def get_meta_features():
         "scheduler_v2_status": True,
         "scheduler_next_runs": True,
         "global_scan_filter": True,
+        "market_data_persistence": True,
     }
 
 @app.get("/api/config")
@@ -651,10 +654,20 @@ cookie = "{config.cookie}"
 [download]
 # 下载目录
 dir = "downloads"
+
+[market_data]
+enabled = true
+db_path = "output/databases/akshare_market.db"
+adjust = "qfq"
+close_finalize_time = "15:05"
+bootstrap_mode = "full_history"
+bootstrap_batch_size = 200
+sync_retry_max = 3
+sync_retry_backoff_seconds = 1.0
 """
 
         # 保存配置文件
-        config_path = "config.toml"
+        config_path = str(get_config_path("app.toml"))
         with open(config_path, 'w', encoding='utf-8') as f:
             f.write(config_content)
 
@@ -1039,6 +1052,23 @@ async def stop_task_api(task_id: str):
     else:
         raise HTTPException(status_code=404, detail="任务不存在或无法停止")
 
+# 抓取后自动提取股票提及并刷新收益（避免“已抓到新帖但未做股票分析”）
+def run_post_crawl_stock_analysis(task_id: str, group_id: str) -> Dict[str, Any]:
+    from modules.analyzers.stock_analyzer import StockAnalyzer
+
+    analyzer = StockAnalyzer(group_id)
+    extract_res = analyzer.extract_only()
+    calc_res = analyzer.calc_pending_performance()
+    add_task_log(
+        task_id,
+        "📈 股票分析补跑完成: "
+        f"new_topics={extract_res.get('new_topics', 0)}, "
+        f"mentions={extract_res.get('mentions_extracted', 0)}, "
+        f"perf_processed={calc_res.get('processed', 0)}, "
+        f"perf_errors={calc_res.get('errors', 0)}",
+    )
+    return {"extract": extract_res, "performance": calc_res}
+
 # 后台任务执行函数
 def run_crawl_historical_task(task_id: str, group_id: str, pages: int, per_page: int, crawl_settings: CrawlHistoricalRequest = None):
     """后台执行历史数据爬取任务"""
@@ -1099,6 +1129,17 @@ def run_crawl_historical_task(task_id: str, group_id: str, pages: int, per_page:
             add_task_log(task_id, f"❌ 会员已过期: {result.get('message', '成员体验已到期')}")
             update_task(task_id, "failed", "会员已过期", {"expired": True, "code": result.get('code'), "message": result.get('message')})
             return
+
+        if (result.get('new_topics', 0) or 0) > 0 or (result.get('updated_topics', 0) or 0) > 0:
+            if is_task_stopped(task_id):
+                return
+            add_task_log(task_id, "🧠 检测到新数据，开始自动执行股票提取与收益刷新...")
+            try:
+                result["stock_analysis"] = run_post_crawl_stock_analysis(task_id, group_id)
+            except Exception as analysis_err:
+                add_task_log(task_id, f"⚠️ 自动股票分析失败（爬取结果已保留）: {analysis_err}")
+        else:
+            add_task_log(task_id, "ℹ️ 本次无新增/更新话题，跳过自动股票分析")
 
         add_task_log(task_id, f"✅ 获取完成！新增话题: {result.get('new_topics', 0)}, 更新话题: {result.get('updated_topics', 0)}")
         update_task(task_id, "completed", "历史数据爬取完成", result)
@@ -1665,6 +1706,17 @@ async def crawl_all(group_id: str, request: CrawlSettingsRequest, background_tas
                     update_task(task_id, "failed", "会员已过期", {"expired": True, "code": result.get('code'), "message": result.get('message')})
                     return
 
+                if (result.get('new_topics', 0) or 0) > 0 or (result.get('updated_topics', 0) or 0) > 0:
+                    if is_task_stopped(task_id):
+                        return
+                    add_task_log(task_id, "🧠 检测到新数据，开始自动执行股票提取与收益刷新...")
+                    try:
+                        result["stock_analysis"] = run_post_crawl_stock_analysis(task_id, group_id)
+                    except Exception as analysis_err:
+                        add_task_log(task_id, f"⚠️ 自动股票分析失败（爬取结果已保留）: {analysis_err}")
+                else:
+                    add_task_log(task_id, "ℹ️ 本次无新增/更新话题，跳过自动股票分析")
+
                 add_task_log(task_id, f"🎉 全量爬取完成！")
                 add_task_log(task_id, f"📊 最终统计: 新增话题: {result.get('new_topics', 0)}, 更新话题: {result.get('updated_topics', 0)}, 总页数: {result.get('pages', 0)}")
                 update_task(task_id, "completed", "全量爬取完成", result)
@@ -1722,6 +1774,17 @@ async def crawl_incremental(group_id: str, request: CrawlHistoricalRequest, back
                 # 检查任务是否被停止
                 if is_task_stopped(task_id):
                     return
+
+                if (result.get('new_topics', 0) or 0) > 0 or (result.get('updated_topics', 0) or 0) > 0:
+                    if is_task_stopped(task_id):
+                        return
+                    add_task_log(task_id, "🧠 检测到新数据，开始自动执行股票提取与收益刷新...")
+                    try:
+                        result["stock_analysis"] = run_post_crawl_stock_analysis(task_id, group_id)
+                    except Exception as analysis_err:
+                        add_task_log(task_id, f"⚠️ 自动股票分析失败（爬取结果已保留）: {analysis_err}")
+                else:
+                    add_task_log(task_id, "ℹ️ 本次无新增/更新话题，跳过自动股票分析")
 
                 add_task_log(task_id, f"✅ 增量爬取完成！新增话题: {result.get('new_topics', 0)}, 更新话题: {result.get('updated_topics', 0)}")
                 update_task(task_id, "completed", "增量爬取完成", result)
@@ -1786,6 +1849,17 @@ async def crawl_latest_until_complete(group_id: str, request: CrawlSettingsReque
                     add_task_log(task_id, f"❌ 会员已过期: {result.get('message', '成员体验已到期')}")
                     update_task(task_id, "failed", "会员已过期", {"expired": True, "code": result.get('code'), "message": result.get('message')})
                     return
+
+                if (result.get('new_topics', 0) or 0) > 0 or (result.get('updated_topics', 0) or 0) > 0:
+                    if is_task_stopped(task_id):
+                        return
+                    add_task_log(task_id, "🧠 检测到新数据，开始自动执行股票提取与收益刷新...")
+                    try:
+                        result["stock_analysis"] = run_post_crawl_stock_analysis(task_id, group_id)
+                    except Exception as analysis_err:
+                        add_task_log(task_id, f"⚠️ 自动股票分析失败（爬取结果已保留）: {analysis_err}")
+                else:
+                    add_task_log(task_id, "ℹ️ 本次无新增/更新话题，跳过自动股票分析")
 
                 add_task_log(task_id, f"✅ 获取最新记录完成！新增话题: {result.get('new_topics', 0)}, 更新话题: {result.get('updated_topics', 0)}")
                 update_task(task_id, "completed", "获取最新记录完成", result)
@@ -2107,7 +2181,7 @@ async def clear_file_database(group_id: str):
 
                 # 同时删除该群组的图片缓存
                 try:
-                    from image_cache_manager import get_image_cache_manager, clear_group_cache_manager
+                    from app.runtime.image_cache_manager import get_image_cache_manager, clear_group_cache_manager
                     cache_manager = get_image_cache_manager(group_id)
                     success, message = cache_manager.clear_cache()
                     if success:
@@ -2198,7 +2272,7 @@ async def clear_topic_database(group_id: str):
 
                 # 同时删除该群组的图片缓存
                 try:
-                    from image_cache_manager import get_image_cache_manager, clear_group_cache_manager
+                    from app.runtime.image_cache_manager import get_image_cache_manager, clear_group_cache_manager
                     cache_manager = get_image_cache_manager(group_id)
                     success, message = cache_manager.clear_cache()
                     if success:
@@ -2423,7 +2497,7 @@ async def get_groups():
         group_account_map = build_account_group_detection()
         local_ids = get_cached_local_group_ids(force_refresh=False)
 
-        # 获取“当前账号”的群列表（优先账号默认账号，其次config.toml；若未配置则视为空集合）
+        # 获取“当前账号”的群列表（优先账号默认账号，其次 config/app.toml；若未配置则视为空集合）
         groups_data: List[dict] = []
         try:
             primary_cookie = get_primary_cookie()
@@ -3759,7 +3833,7 @@ def build_account_group_detection(force_refresh: bool = False) -> Dict[str, Dict
     return group_to_account
 
 def get_cookie_for_group(group_id: str) -> str:
-    """根据自动匹配结果选择用于该群组的Cookie，失败则回退到config.toml"""
+    """根据自动匹配结果选择用于该群组的Cookie，失败则回退到 config/app.toml"""
     mapping = build_account_group_detection(force_refresh=False)
     summary = mapping.get(str(group_id))
     cookie = None
@@ -3984,7 +4058,7 @@ async def delete_group_local(group_id: str):
 
         # 清空并删除图片缓存目录，同时释放缓存管理器
         try:
-            from image_cache_manager import get_image_cache_manager, clear_group_cache_manager
+            from app.runtime.image_cache_manager import get_image_cache_manager, clear_group_cache_manager
             cache_manager = get_image_cache_manager(group_id)
             ok, msg = cache_manager.clear_cache()
             if ok:
@@ -5287,7 +5361,7 @@ def api_global_analyze_performance(background_tasks: BackgroundTasks, force: boo
     
     current_tasks[task_id] = {
         "task_id": task_id,
-        "type": "global_analyze",
+        "type": "global_analyze_performance",
         "status": "running",
         "message": "正在初始化全区收益计算...",
         "created_at": datetime.now().isoformat(),

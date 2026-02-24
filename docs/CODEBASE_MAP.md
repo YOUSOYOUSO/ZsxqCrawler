@@ -13,15 +13,16 @@ This document provides a quick navigation map for humans and AI agents.
 
 ## Top-Level Entry Files
 
-- `main.py`: FastAPI app entry + compatibility glue
-- `auto_scheduler.py`: scheduler orchestration
+- `app/main.py`: FastAPI app entry + compatibility glue
+- `app/scheduler/auto_scheduler.py`: scheduler orchestration
+- `app/runtime/image_cache_manager.py`: runtime image cache service
 
 ## Runtime Config Assets
 
 - `config/stock_exclude.json`: stock exclusion rules (primary)
-- `stock_exclude.json`: legacy fallback path (read-only compatibility)
-- `group_scan_filter.json`: global group filter configuration
-- `stock_aliases.json`: stock alias dictionary
+- `config/group_scan_filter.json`: global group filter configuration
+- `config/stock_aliases.json`: stock alias dictionary
+- `config/accounts.json`: legacy JSON account storage (deprecated, SQL-first)
 
 ## Categorized Module Directories
 
@@ -62,9 +63,11 @@ Shared infrastructure and cross-domain helpers:
 - `modules/shared/logger_config.py`
 - `modules/shared/group_scan_filter.py`
 - `modules/shared/stock_exclusion.py`
+- `modules/shared/paths.py`
 
 ## Migration Direction
 
 - New internal code should prefer `modules/*` paths.
 - Internal imports should directly use `modules/*` and `api/*` paths.
 - Root compatibility shim files have been removed.
+- Root-level business Python files are disallowed by pre-commit hooks.

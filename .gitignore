@@ -48,8 +48,9 @@ cache
 /downloads/
 /output/
 /.local/
-test*.py
+/test*.py
 test*.js
 
 # local config
-config.toml
+/config/app.toml
+/var/logs/

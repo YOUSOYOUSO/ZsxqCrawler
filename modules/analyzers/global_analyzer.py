@@ -9,6 +9,7 @@ import sqlite3
 import os
 import json
 import hashlib
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional, Tuple, Set, TypedDict
 from collections import defaultdict
@@ -18,6 +19,7 @@ import time
 from modules.shared.db_path_manager import get_db_path_manager
 from modules.shared.logger_config import log_info, log_warning, log_error
 from modules.shared.stock_exclusion import is_excluded_stock
+from modules.shared.paths import get_config_path
 from modules.analyzers.sector_heat import build_topic_time_filter, aggregate_sector_heat, match_sector_keywords
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -28,7 +30,8 @@ class StockSignal(TypedDict):
     group_names: Set[str]
     stock_name: str
     latest_date: str
-    returns: List[float]
+    return_sum: float
+    valid_returns: int
     positive_returns: int
 
 class StockData(TypedDict):
@@ -39,12 +42,14 @@ class StockData(TypedDict):
 
 class GlobalAnalyzer:
     """跨群组全局数据聚合引擎"""
+    _init_lock = threading.RLock()
+    _initialized_dbs: Set[str] = set()
 
     def __init__(self):
         self.db_path_manager = get_db_path_manager()
         self._cache = {}
         self._cache_time = {}
-        self._cache_ttl = 300  # 缓存有效期5分钟
+        self._cache_ttl = 60  # 缓存有效期60秒
         self._alias_mtime: float = -1.0
         self._alias_to_std: Dict[str, str] = {}
         self._std_to_aliases: Dict[str, Set[str]] = {}
@@ -57,6 +62,13 @@ class GlobalAnalyzer:
     def _set_cache(self, key: str, data: Any):
         self._cache[key] = data
         self._cache_time[key] = datetime.now()
+
+    def _with_cache_hit(self, data: Any, cache_hit: bool) -> Any:
+        if isinstance(data, dict):
+            cloned = dict(data)
+            cloned["_cache_hit"] = cache_hit
+            return cloned
+        return data
 
     def invalidate_cache(self):
         """清除全部缓存（调度器每轮结束后调用）"""
@@ -94,9 +106,9 @@ class GlobalAnalyzer:
         return self._get_scoped_group_dbs()
 
     def _load_stock_aliases(self):
-        """加载 stock_aliases.json，并构建别名/标准名双向索引。"""
-        alias_file = os.path.join(self.db_path_manager.project_root, "stock_aliases.json")
-        if not os.path.exists(alias_file):
+        """加载 config/stock_aliases.json，并构建别名/标准名双向索引。"""
+        alias_file = get_config_path("stock_aliases.json")
+        if not alias_file.exists():
             self._alias_mtime = -1.0
             self._alias_to_std = {}
             self._std_to_aliases = {}
@@ -160,55 +172,93 @@ class GlobalAnalyzer:
             return []
 
     def _get_conn(self, db_path: str):
-        """获取带 WAL 模式和超时的数据库连接"""
-        conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+        """获取带 WAL 模式和超时的数据库连接。读路径优先只读连接。"""
+        self._ensure_db_runtime_schema(db_path)
+        conn = None
+        try:
+            readonly_uri = f"file:{db_path}?mode=ro"
+            conn = sqlite3.connect(readonly_uri, uri=True, check_same_thread=False, timeout=30)
+        except Exception:
+            conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA busy_timeout=30000')
-
-        # 旧库可能缺少股票相关表，这里容错创建，避免查询报错
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stock_mentions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic_id INTEGER NOT NULL,
-                stock_code TEXT NOT NULL,
-                stock_name TEXT NOT NULL,
-                mention_date TEXT NOT NULL,
-                mention_time TEXT NOT NULL,
-                context_snippet TEXT,
-                sentiment TEXT DEFAULT 'neutral',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS mention_performance (
-                mention_id INTEGER PRIMARY KEY,
-                stock_code TEXT NOT NULL,
-                mention_date TEXT NOT NULL,
-                price_at_mention REAL,
-                return_1d REAL,
-                return_3d REAL,
-                return_5d REAL,
-                return_10d REAL,
-                return_20d REAL,
-                return_60d REAL,
-                return_120d REAL,
-                return_250d REAL,
-                excess_return_1d REAL,
-                excess_return_3d REAL,
-                excess_return_5d REAL,
-                excess_return_10d REAL,
-                excess_return_20d REAL,
-                excess_return_60d REAL,
-                excess_return_120d REAL,
-                excess_return_250d REAL,
-                max_return REAL,
-                max_drawdown REAL,
-                freeze_level INTEGER DEFAULT 0
-            )
-        ''')
-        conn.commit()
         return conn
+
+    def _ensure_db_runtime_schema(self, db_path: str) -> None:
+        """每个数据库仅初始化一次：补齐表和索引，避免读路径重复 DDL。"""
+        db_key = os.path.abspath(db_path)
+        if db_key in self._initialized_dbs:
+            return
+
+        with GlobalAnalyzer._init_lock:
+            if db_key in self._initialized_dbs:
+                return
+            conn = None
+            try:
+                conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('PRAGMA busy_timeout=30000')
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS stock_mentions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        topic_id INTEGER NOT NULL,
+                        stock_code TEXT NOT NULL,
+                        stock_name TEXT NOT NULL,
+                        mention_date TEXT NOT NULL,
+                        mention_time TEXT NOT NULL,
+                        context_snippet TEXT,
+                        sentiment TEXT DEFAULT 'neutral',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS mention_performance (
+                        mention_id INTEGER PRIMARY KEY,
+                        stock_code TEXT NOT NULL,
+                        mention_date TEXT NOT NULL,
+                        price_at_mention REAL,
+                        return_1d REAL,
+                        return_3d REAL,
+                        return_5d REAL,
+                        return_10d REAL,
+                        return_20d REAL,
+                        return_60d REAL,
+                        return_120d REAL,
+                        return_250d REAL,
+                        excess_return_1d REAL,
+                        excess_return_3d REAL,
+                        excess_return_5d REAL,
+                        excess_return_10d REAL,
+                        excess_return_20d REAL,
+                        excess_return_60d REAL,
+                        excess_return_120d REAL,
+                        excess_return_250d REAL,
+                        max_return REAL,
+                        max_drawdown REAL,
+                        freeze_level INTEGER DEFAULT 0
+                    )
+                ''')
+                # 非破坏性索引补强
+                index_sqls = [
+                    'CREATE INDEX IF NOT EXISTS idx_topics_create_time ON topics(create_time)',
+                    'CREATE INDEX IF NOT EXISTS idx_talks_topic_id ON talks(topic_id)',
+                    'CREATE INDEX IF NOT EXISTS idx_sm_mention_date ON stock_mentions(mention_date)',
+                    'CREATE INDEX IF NOT EXISTS idx_sm_topic_stock ON stock_mentions(topic_id, stock_code)',
+                    'CREATE INDEX IF NOT EXISTS idx_mp_mention_id ON mention_performance(mention_id)',
+                ]
+                for stmt in index_sqls:
+                    try:
+                        cursor.execute(stmt)
+                    except Exception:
+                        pass
+                conn.commit()
+            except Exception as e:
+                log_warning(f"初始化全局分析库失败(db={db_path}): {e}")
+            finally:
+                if conn:
+                    conn.close()
+            self._initialized_dbs.add(db_key)
 
     def _query_all_groups(self, query: str, params: tuple = ()) -> List[tuple]:
         """对所有群组数据库执行相同查询，合并结果"""
@@ -433,7 +483,7 @@ class GlobalAnalyzer:
         """全局统计概览"""
         cache_key = self._scoped_cache_key('global_stats')
         if self._is_cache_valid(cache_key):
-            return self._cache[cache_key]
+            return self._with_cache_hit(self._cache[cache_key], True)
 
         groups = self._get_all_group_dbs()
         total_topics = 0
@@ -480,7 +530,7 @@ class GlobalAnalyzer:
             'total_performance': total_performance
         }
         self._set_cache(cache_key, result)
-        return result
+        return self._with_cache_hit(result, False)
 
     # ========== 全局胜率排行 ==========
 
@@ -497,9 +547,15 @@ class GlobalAnalyzer:
         跨群组胜率排行 (支持过滤、排序、分页)
         优化：并行查询 + 内存过滤/排序
         """
+        cache_key = self._scoped_cache_key(
+            f"global_win_rate_{min_mentions}_{return_period}_{limit}_{start_date or ''}_{end_date or ''}_{sort_by}_{order}_{page}_{page_size}"
+        )
+        if self._is_cache_valid(cache_key):
+            return self._with_cache_hit(self._cache[cache_key], True)
+
         # 1. 获取全量数据 (仅按 min_mentions 缓存)
         # return_period 也作为 key，因为 SQL 查询依赖它
-        raw_data = self._get_cached_raw_win_rate(min_mentions, return_period)
+        raw_data = self._get_cached_raw_win_rate(min_mentions, return_period, start_date, end_date)
 
         # 2. 内存过滤 (Date)
         filtered_results = []
@@ -597,16 +653,26 @@ class GlobalAnalyzer:
             end_idx = min(start_idx + page_size, total_count)
             paginated_data = filtered_results[start_idx:end_idx]
 
-        return {
+        result = {
             'data': paginated_data,
             'total': total_count,
             'page': page,
             'page_size': page_size
         }
+        self._set_cache(cache_key, result)
+        return self._with_cache_hit(result, False)
 
-    def _get_cached_raw_win_rate(self, min_mentions: int, return_period: str) -> List[Dict]:
+    def _get_cached_raw_win_rate(
+        self,
+        min_mentions: int,
+        return_period: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[Dict]:
         """获取并缓存原始胜率数据（包含所有详细记录以便二次过滤）"""
-        cache_key = self._scoped_cache_key(f'raw_win_rate_{return_period}_{min_mentions}')
+        cache_key = self._scoped_cache_key(
+            f"raw_win_rate_{return_period}_{min_mentions}_{start_date or ''}_{end_date or ''}"
+        )
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]
 
@@ -617,7 +683,7 @@ class GlobalAnalyzer:
         all_rows = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_group = {
-                executor.submit(self._fetch_group_win_rate_data, g, return_period): g  # type: ignore
+                executor.submit(self._fetch_group_win_rate_data, g, return_period, start_date, end_date): g  # type: ignore
                 for g in groups
             }
             for future in concurrent.futures.as_completed(future_to_group):
@@ -705,7 +771,13 @@ class GlobalAnalyzer:
         self._set_cache(cache_key, results)
         return results
 
-    def _fetch_group_win_rate_data(self, group: Dict, return_period: str) -> List[Tuple]:
+    def _fetch_group_win_rate_data(
+        self,
+        group: Dict,
+        return_period: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[Tuple]:
         """单个群组的数据获取函数 (供线程池调用)"""
         db_path = group['topics_db']
         if not os.path.exists(db_path):
@@ -722,7 +794,14 @@ class GlobalAnalyzer:
                 JOIN mention_performance mp ON sm.id = mp.mention_id
                 WHERE mp.{return_period} IS NOT NULL
             '''
-            cursor.execute(query)
+            params: List[Any] = []
+            if start_date:
+                query += ' AND sm.mention_date >= ?'
+                params.append(start_date)
+            if end_date:
+                query += ' AND sm.mention_date <= ?'
+                params.append(end_date)
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             conn.close()
             
@@ -735,6 +814,10 @@ class GlobalAnalyzer:
 
     def get_global_stock_events(self, stock_code: str) -> Dict[str, Any]:
         """获取某只股票在所有群组的提及事件（含完整话题文本 + 关联股票）"""
+        cache_key = self._scoped_cache_key(f"global_stock_events_{stock_code}")
+        if self._is_cache_valid(cache_key):
+            return self._with_cache_hit(self._cache[cache_key], True)
+
         # 此方法实时查询，不缓存或短缓存
         if is_excluded_stock(stock_code, None):
             return {
@@ -833,12 +916,14 @@ class GlobalAnalyzer:
         # 按时间倒序排序
         all_events.sort(key=lambda x: x.get('mention_time') or x.get('mention_date') or '', reverse=True)
 
-        return {
+        result = {
             'stock_code': stock_code,
             'stock_name': stock_name,
             'total_mentions': len(all_events),
             'events': all_events
         }
+        self._set_cache(cache_key, result)
+        return self._with_cache_hit(result, False)
 
     # ========== 全局板块热度 ==========
 
@@ -982,7 +1067,7 @@ class GlobalAnalyzer:
 
         since_date = start_date or (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
 
-        stock_signals: Dict[str, StockSignal] = {} # explicit typed dict
+        stock_signals: Dict[str, StockSignal] = {}
 
         for group in self._get_all_group_dbs():
             db_path = group['topics_db']
@@ -991,8 +1076,16 @@ class GlobalAnalyzer:
             try:
                 conn = self._get_conn(db_path)
                 cursor = conn.cursor()
+                group_name = self._get_group_name(conn, group['group_id'])
                 query = '''
-                    SELECT sm.stock_code, sm.stock_name, sm.mention_date, mp.return_5d
+                    SELECT
+                        sm.stock_code,
+                        MAX(sm.stock_name) AS stock_name,
+                        COUNT(*) AS mention_count,
+                        MAX(sm.mention_date) AS latest_mention_date,
+                        AVG(mp.return_5d) AS avg_return_5d,
+                        SUM(CASE WHEN mp.return_5d > 0 THEN 1 ELSE 0 END) AS positive_returns,
+                        SUM(CASE WHEN mp.return_5d IS NOT NULL THEN 1 ELSE 0 END) AS valid_returns
                     FROM stock_mentions sm
                     LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
                     WHERE sm.mention_date >= ?
@@ -1001,33 +1094,27 @@ class GlobalAnalyzer:
                 if end_date:
                     query += ' AND sm.mention_date <= ?'
                     params.append(end_date)
-                query += '''
-                    ORDER BY sm.mention_date DESC
-                '''
+                query += ' GROUP BY sm.stock_code'
                 cursor.execute(query, params)
-                for code, name, date, ret in cursor.fetchall():
+                for code, name, mention_count, latest_date, avg_ret, positive_returns, valid_returns in cursor.fetchall():
                     if is_excluded_stock(code, name):
                         continue
                     if code not in stock_signals:
                         stock_signals[code] = {
                             'mentions': 0, 'group_names': set(), 'stock_name': '',
-                            'latest_date': '', 'returns': [], 'positive_returns': 0
+                            'latest_date': '', 'return_sum': 0.0, 'valid_returns': 0, 'positive_returns': 0
                         }
                     s: StockSignal = stock_signals[code]
-                    s['mentions'] += 1
-                    
-                    # 获取群名
-                    group_name = self._get_group_name(conn, group['group_id'])
+                    s['mentions'] += int(mention_count or 0)
                     s['group_names'].add(group_name)
-                    
                     if name:
                         s['stock_name'] = name
-                    if str(date) > str(s['latest_date']):
-                        s['latest_date'] = date
-                    if ret is not None:
-                        s['returns'].append(ret)
-                        if ret > 0:
-                            s['positive_returns'] += 1
+                    if str(latest_date) > str(s['latest_date']):
+                        s['latest_date'] = latest_date
+                    if avg_ret is not None and valid_returns:
+                        s['return_sum'] += float(avg_ret) * int(valid_returns)
+                        s['valid_returns'] += int(valid_returns)
+                        s['positive_returns'] += int(positive_returns or 0)
                 conn.close()
             except Exception:
                 pass
@@ -1036,8 +1123,8 @@ class GlobalAnalyzer:
         for code, s in stock_signals.items():
             if s['mentions'] < min_mentions:
                 continue
-            avg_ret = sum(s['returns']) / len(s['returns']) if s['returns'] else None
-            historical_win_rate = (s['positive_returns'] / len(s['returns']) * 100) if s['returns'] else None
+            avg_ret = (s['return_sum'] / s['valid_returns']) if s['valid_returns'] > 0 else None
+            historical_win_rate = (s['positive_returns'] / s['valid_returns'] * 100) if s['valid_returns'] > 0 else None
             # 权重 = 提及次数 × 群组数（跨群共识加权）
             weight = s['mentions'] * len(s['group_names'])
             results.append({
@@ -1064,6 +1151,11 @@ class GlobalAnalyzer:
                                  page_size: int = 20) -> Dict[str, Any]:
         """全局板块话题明细（跨群组）"""
         from modules.analyzers.stock_analyzer import SECTOR_KEYWORDS
+        cache_key = self._scoped_cache_key(
+            f"global_sector_topics_{sector}_{start_date or ''}_{end_date or ''}_{page}_{page_size}"
+        )
+        if self._is_cache_valid(cache_key):
+            return self._with_cache_hit(self._cache[cache_key], True)
 
         if sector not in SECTOR_KEYWORDS:
             raise ValueError(f"未知板块: {sector}")
@@ -1161,12 +1253,14 @@ class GlobalAnalyzer:
         total = len(matched_topics)
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        return {
+        result = {
             'total': total,
             'page': page,
             'page_size': page_size,
             'items': matched_topics[start_idx:end_idx]
         }
+        self._set_cache(cache_key, result)
+        return self._with_cache_hit(result, False)
 
     # ========== 群组概览 ==========
 
@@ -1234,6 +1328,10 @@ class GlobalAnalyzer:
 
     def get_whitelist_topic_mentions(self, page: int = 1, per_page: int = 20, search: Optional[str] = None) -> Dict[str, Any]:
         """聚合白名单群组内的话题列表（不依赖股票分析结果）"""
+        cache_key = self._scoped_cache_key(f"whitelist_topic_mentions_{page}_{per_page}_{search or ''}")
+        if self._is_cache_valid(cache_key):
+            return self._with_cache_hit(self._cache[cache_key], True)
+
         page = max(1, int(page or 1))
         per_page = max(1, min(100, int(per_page or 20)))
         search_text = (search or '').strip().lower()
@@ -1366,7 +1464,7 @@ class GlobalAnalyzer:
         start_idx = (page - 1) * per_page
         end_idx = start_idx + per_page
 
-        return {
+        result = {
             "total": total,
             "page": page,
             "per_page": per_page,
@@ -1374,6 +1472,8 @@ class GlobalAnalyzer:
             "whitelist_group_count": len(whitelist_ids),
             "items": all_topics[start_idx:end_idx]
         }
+        self._set_cache(cache_key, result)
+        return self._with_cache_hit(result, False)
 
 
 # 全局单例

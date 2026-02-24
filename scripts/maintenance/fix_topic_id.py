@@ -26,7 +26,7 @@ fix_file("zsxq_columns_database.py", [
     ("'topic_id': row[1],", "'topic_id': str(row[1]) if row[1] is not None else None,")
 ])
 
-fix_file("main.py", [
+fix_file("app/main.py", [
     ('"topic_id": topic[0],', '"topic_id": str(topic[0]) if topic[0] is not None else None,'),
     ('"topic_id": topic_id,', '"topic_id": str(topic_id) if topic_id is not None else None,')
 ])

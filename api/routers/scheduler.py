@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 async def scheduler_status():
     """调度器状态"""
     try:
-        from auto_scheduler import get_scheduler
+        from app.scheduler.auto_scheduler import get_scheduler
 
         scheduler = get_scheduler()
         return scheduler.get_status()
@@ -23,7 +23,7 @@ async def scheduler_status():
 async def scheduler_next_runs(count: int = 5):
     """下一批调度触发时间点。"""
     try:
-        from auto_scheduler import get_scheduler
+        from app.scheduler.auto_scheduler import get_scheduler
 
         scheduler = get_scheduler()
         return scheduler.get_next_runs(count=count)
@@ -34,7 +34,7 @@ async def scheduler_next_runs(count: int = 5):
 @router.post("/start")
 async def scheduler_start():
     """启动调度器"""
-    from auto_scheduler import get_scheduler
+    from app.scheduler.auto_scheduler import get_scheduler
 
     scheduler = get_scheduler()
     try:
@@ -58,7 +58,7 @@ async def scheduler_start():
 @router.post("/stop")
 async def stop_scheduler_api():
     """停止调度器"""
-    from auto_scheduler import get_scheduler
+    from app.scheduler.auto_scheduler import get_scheduler
 
     scheduler = get_scheduler()
     try:
@@ -82,7 +82,7 @@ async def stop_scheduler_api():
 @router.post("/analyze")
 async def analyze_scheduler_api():
     """Trigger manual analysis immediately."""
-    from auto_scheduler import get_scheduler
+    from app.scheduler.auto_scheduler import get_scheduler
 
     scheduler = get_scheduler()
     asyncio.create_task(scheduler.trigger_manual_analysis_task())
@@ -93,7 +93,7 @@ async def analyze_scheduler_api():
 async def stop_analysis_api():
     """手动停止数据分析任务"""
     try:
-        from auto_scheduler import get_scheduler
+        from app.scheduler.auto_scheduler import get_scheduler
 
         scheduler = get_scheduler()
         result = await scheduler.stop_manual_analysis()
@@ -108,7 +108,7 @@ async def stop_analysis_api():
 async def scheduler_update_config(config: dict):
     """更新调度器配置"""
     try:
-        from auto_scheduler import get_scheduler
+        from app.scheduler.auto_scheduler import get_scheduler
 
         scheduler = get_scheduler()
         scheduler.update_config(config)

@@ -13,7 +13,7 @@
 | `/api/tasks/*` | `api/routers/tasks.py` | 任务查询/停止/日志/SSE |
 | `/api/global/crawl` 等任务型 global 接口 | `api/routers/global_tasks.py` | 全局任务编排 |
 
-已完成从 `main.py` 下沉到 `api/services/global_task_service.py` 的接口：
+已完成从 `app/main.py` 下沉到 `api/services/global_task_service.py` 的接口：
 
 - `/api/global/crawl`
 - `/api/global/files/collect`
@@ -25,7 +25,7 @@
 
 ## Legacy In Main (to be migrated)
 
-以下路径仍在 `main.py` 直接定义，按域分批迁移：
+以下路径仍在 `app/main.py` 直接定义，按域分批迁移：
 
 - crawl domain: `/api/crawl/*`
 - file domain: `/api/files/*`
@@ -37,5 +37,5 @@
 ## Migration Rule
 
 1. 新 router 先保持路径与参数不变。
-2. 迁移后移除 `main.py` 对应 `@app.*` 装饰器，防止重复注册。
+2. 迁移后移除 `app/main.py` 对应 `@app.*` 装饰器，防止重复注册。
 3. 逻辑搬迁到 service 后更新本表。

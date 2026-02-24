@@ -1,7 +1,8 @@
 import time
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
+from fastapi.concurrency import run_in_threadpool
 
 from modules.analyzers.ai_analyzer import AIAnalyzer
 from modules.shared.logger_config import log_error, log_info
@@ -13,14 +14,29 @@ def _get_global_ai_analyzer() -> AIAnalyzer:
     return AIAnalyzer(db_path=None, group_id=None)
 
 
+def _set_perf_headers(response: Response, started_at: float, cache_hit: Optional[bool] = None) -> None:
+    response.headers["X-Compute-Ms"] = f"{(time.time() - started_at) * 1000:.2f}"
+    if cache_hit is not None:
+        response.headers["X-Cache-Hit"] = "1" if cache_hit else "0"
+
+
+def _extract_cache_hit(payload: object) -> Optional[bool]:
+    if isinstance(payload, dict) and "_cache_hit" in payload:
+        return bool(payload.get("_cache_hit"))
+    return None
+
+
 @router.get("/api/global/stats")
-async def global_stats():
+async def global_stats(response: Response):
     """全局统计概览"""
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_global_stats()
+        data = await run_in_threadpool(analyzer.get_global_stats)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"全局统计失败: {str(e)}")
 
@@ -85,6 +101,7 @@ async def get_global_hot_words(
 
 @router.get("/api/global/win-rate")
 async def get_global_win_rate(
+    response: Response,
     min_mentions: int = 2,
     return_period: str = "return_5d",
     limit: int = 1000,
@@ -100,18 +117,20 @@ async def get_global_win_rate(
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        data = analyzer.get_global_win_rate(
-            min_mentions=min_mentions,
-            return_period=return_period,
-            limit=limit,
-            start_date=start_date,
-            end_date=end_date,
-            sort_by=sort_by,
-            order=order,
-            page=page,
-            page_size=page_size,
+        data = await run_in_threadpool(
+            analyzer.get_global_win_rate,
+            min_mentions,
+            return_period,
+            limit,
+            start_date,
+            end_date,
+            sort_by,
+            order,
+            page,
+            page_size,
         )
         duration = time.time() - start_time
+        _set_perf_headers(response, start_time, _extract_cache_hit(data))
         log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, start={start_date}, end={end_date})")
         return data
     except Exception as e:
@@ -120,47 +139,58 @@ async def get_global_win_rate(
 
 
 @router.get("/api/global/stock/{stock_code}/events")
-async def global_stock_events(stock_code: str):
+async def global_stock_events(stock_code: str, response: Response):
     """全局股票事件详情"""
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_global_stock_events(stock_code)
+        data = await run_in_threadpool(analyzer.get_global_stock_events, stock_code)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取全局股票事件失败: {str(e)}")
 
 
 @router.get("/api/global/sector-heat")
-async def get_global_sector_heat(start_date: Optional[str] = None, end_date: Optional[str] = None):
+async def get_global_sector_heat(response: Response, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_heat(start_date=start_date, end_date=end_date)
+        data = await run_in_threadpool(analyzer.get_global_sector_heat, start_date, end_date)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
 
 
 @router.get("/api/global/sector-topics")
 async def get_global_sector_topics(
+    response: Response,
     sector: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ):
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_global_sector_topics(
-            sector=sector,
-            start_date=start_date,
-            end_date=end_date,
-            page=page,
-            page_size=page_size,
+        data = await run_in_threadpool(
+            analyzer.get_global_sector_topics,
+            sector,
+            start_date,
+            end_date,
+            page,
+            page_size,
         )
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -168,34 +198,43 @@ async def get_global_sector_topics(
 
 
 @router.get("/api/global/signals")
-async def global_signals(lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None):
+async def global_signals(response: Response, lookback_days: int = 7, min_mentions: int = 2, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_global_signals(lookback_days, min_mentions, start_date=start_date, end_date=end_date)
+        data = await run_in_threadpool(analyzer.get_global_signals, lookback_days, min_mentions, start_date, end_date)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"信号查询失败: {str(e)}")
 
 
 @router.get("/api/global/groups")
-async def global_groups_overview():
+async def global_groups_overview(response: Response):
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_groups_overview()
+        data = await run_in_threadpool(analyzer.get_groups_overview)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
 
 
 @router.get("/api/global/topics")
-async def global_whitelist_topics(page: int = 1, per_page: int = 20, search: Optional[str] = None):
+async def global_whitelist_topics(response: Response, page: int = 1, per_page: int = 20, search: Optional[str] = None):
+    started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        return analyzer.get_whitelist_topic_mentions(page=page, per_page=per_page, search=search)
+        data = await run_in_threadpool(analyzer.get_whitelist_topic_mentions, page, per_page, search)
+        _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取白名单话题失败: {str(e)}")
 

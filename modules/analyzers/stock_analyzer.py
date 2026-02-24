@@ -20,7 +20,10 @@ import akshare as ak
 
 from modules.shared.db_path_manager import get_db_path_manager
 from modules.shared.logger_config import log_info, log_warning, log_error, log_debug
+from modules.shared.market_data_store import MarketDataStore
 from modules.shared.stock_exclusion import is_excluded_stock, build_sql_exclusion_clause
+from modules.shared.paths import get_config_path
+from modules.analyzers.market_data_sync import MarketDataSyncService
 from modules.analyzers.sector_heat import build_topic_time_filter, aggregate_sector_heat
 
 
@@ -91,6 +94,8 @@ class StockAnalyzer:
         self._stock_dict = {}  # code -> name
         self._name_to_code = {}  # name -> code
         self._dict_cache_path = Path(self.db_path_manager.base_dir) / self.DICT_CACHE_FILE
+        self.market_store = MarketDataStore()
+        self.market_sync = MarketDataSyncService(store=self.market_store, log_callback=self.log)
 
     def log(self, message: str):
         """统一日志"""
@@ -250,8 +255,16 @@ class StockAnalyzer:
             stock_dict, name_to_code = self._load_stock_dictionary_from_cache()
 
             if not stock_dict:
-                stock_dict, name_to_code = self._fetch_stock_dictionary_from_akshare()
-                self._save_stock_dictionary_cache(stock_dict, name_to_code)
+                try:
+                    stock_dict, name_to_code = self._fetch_stock_dictionary_from_akshare()
+                    self._save_stock_dictionary_cache(stock_dict, name_to_code)
+                except Exception:
+                    stale_stock_dict, stale_name_to_code = self._load_stock_dictionary_from_cache(allow_expired=True)
+                    if stale_stock_dict and stale_name_to_code:
+                        self.log("⚠️ AkShare获取失败，已回退到本地过期缓存")
+                        stock_dict, name_to_code = stale_stock_dict, stale_name_to_code
+                    else:
+                        raise
             else:
                 total = len(name_to_code)
                 self.log(f"字典处理进度 {total}/{total}")
@@ -282,9 +295,9 @@ class StockAnalyzer:
     def _load_and_apply_user_aliases(self, name_to_code: Dict[str, str], stock_dict: Dict[str, str]):
         """
         加载用户自定义别名并应用到字典中
-        stock_aliases.json 格式: {"别名": "标准股票名称"}
+        config/stock_aliases.json 格式: {"别名": "标准股票名称"}
         """
-        alias_file = Path("stock_aliases.json")
+        alias_file = get_config_path("stock_aliases.json")
         if not alias_file.exists():
             return
 
@@ -326,7 +339,7 @@ class StockAnalyzer:
             self.log(msg)
             log_warning(msg)
 
-    def _load_stock_dictionary_from_cache(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+    def _load_stock_dictionary_from_cache(self, allow_expired: bool = False) -> Tuple[Dict[str, str], Dict[str, str]]:
         """尝试从本地缓存读取股票字典"""
         try:
             if not self._dict_cache_path.exists():
@@ -338,8 +351,10 @@ class StockAnalyzer:
             built_at = float(payload.get("built_at", 0))
             age = time.time() - built_at
             if age > self.DICT_CACHE_TTL_SECONDS:
-                self.log("♻️ 本地股票字典缓存已过期，准备刷新")
-                return {}, {}
+                if not allow_expired:
+                    self.log("♻️ 本地股票字典缓存已过期，准备刷新")
+                    return {}, {}
+                self.log("⚠️ 本地股票字典缓存已过期，AkShare异常时将回退使用")
 
             stock_dict = payload.get("stock_dict", {})
             name_to_code = payload.get("name_to_code", {})
@@ -368,43 +383,51 @@ class StockAnalyzer:
     def _fetch_stock_dictionary_from_akshare(self) -> Tuple[Dict[str, str], Dict[str, str]]:
         """从 AkShare 获取全量股票字典，并输出构建进度"""
         self.log("从AkShare获取清单")
-        try:
-            with StockAnalyzer._akshare_lock:
-                df = ak.stock_zh_a_spot_em()
-            total_rows = len(df)
-            self.log(f"字典处理进度 0/{total_rows}")
+        max_attempts = int(os.environ.get("AKSHARE_STOCK_DICT_MAX_RETRIES", "3"))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with StockAnalyzer._akshare_lock:
+                    df = ak.stock_zh_a_spot_em()
+                total_rows = len(df)
+                self.log(f"字典处理进度 0/{total_rows}")
 
-            stock_dict: Dict[str, str] = {}
-            name_to_code: Dict[str, str] = {}
+                stock_dict: Dict[str, str] = {}
+                name_to_code: Dict[str, str] = {}
 
-            for idx, (_, row) in enumerate(df.iterrows(), 1):
-                code = str(row['代码'])
-                name = str(row['名称']).strip()
+                for idx, (_, row) in enumerate(df.iterrows(), 1):
+                    code = str(row['代码'])
+                    name = str(row['名称']).strip()
 
-                if not name or len(name) < 2:
-                    continue
-                if name in EXCLUDE_WORDS:
-                    continue
+                    if not name or len(name) < 2:
+                        continue
+                    if name in EXCLUDE_WORDS:
+                        continue
 
-                if code.startswith('6'):
-                    full_code = f"{code}.SH"
-                elif code.startswith(('0', '3')):
-                    full_code = f"{code}.SZ"
-                elif code.startswith(('4', '8')):
-                    full_code = f"{code}.BJ"
-                else:
-                    full_code = code
+                    if code.startswith('6'):
+                        full_code = f"{code}.SH"
+                    elif code.startswith(('0', '3')):
+                        full_code = f"{code}.SZ"
+                    elif code.startswith(('4', '8')):
+                        full_code = f"{code}.BJ"
+                    else:
+                        full_code = code
 
-                stock_dict[full_code] = name
-                name_to_code[name] = full_code
+                    stock_dict[full_code] = name
+                    name_to_code[name] = full_code
 
-                if idx % 1000 == 0 or idx == total_rows:
-                    self.log(f"字典处理进度 {idx}/{total_rows}")
+                    if idx % 1000 == 0 or idx == total_rows:
+                        self.log(f"字典处理进度 {idx}/{total_rows}")
 
-            return stock_dict, name_to_code
-        except Exception as e:
-            log_error(f"构建股票字典失败: {e}")
-            raise
+                return stock_dict, name_to_code
+            except Exception as e:
+                if attempt >= max_attempts:
+                    log_error(f"构建股票字典失败: {e}")
+                    raise
+                sleep_seconds = min(2 ** (attempt - 1), 5)
+                log_warning(
+                    f"AkShare获取股票清单失败（第{attempt}/{max_attempts}次）: {e}，{sleep_seconds}s后重试"
+                )
+                time.sleep(sleep_seconds)
 
     def extract_stocks(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -452,204 +475,99 @@ class StockAnalyzer:
 
     def fetch_price_range(self, stock_code: str, start_date: str, end_date: str) -> List[Dict]:
         """
-        获取股票区间行情，按天级粒度缓存
-        - T-2 之前历史数据视为稳定，直接复用缓存
-        - T-1 / T 数据每次刷新（盘后修正 + 盘中变动）
-        - 只对缺失日期调用 AkShare
+        获取股票区间行情
+        - 优先使用全局持久化行情库 market_daily_prices
+        - 历史日仅使用 is_final=1
+        - 当日数据在 15:05 前允许 is_final=0（盘中参考），15:05 后要求 is_final=1
         """
-        pure_code = stock_code.split('.')[0]
-        today_dt = datetime.now().date()
-        refresh_from = (today_dt - timedelta(days=1)).strftime('%Y-%m-%d')  # T-1 起刷新
+        allow_today_unfinal = not self.market_store.is_market_closed_now()
+        rows = self.market_store.get_price_range(
+            stock_code=stock_code,
+            start_date=start_date,
+            end_date=end_date,
+            allow_today_unfinal=allow_today_unfinal,
+        )
 
-        # 阶段1：查询缓存（短连接，快速释放）
-        conn = self._get_conn()
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT trade_date, open, close, high, low, change_pct, volume
-            FROM stock_price_cache
-            WHERE stock_code = ? AND trade_date >= ? AND trade_date <= ?
-            ORDER BY trade_date
-        ''', (stock_code, start_date, end_date))
-        cached_rows = cursor.fetchall()
-        cached_dates = {r[0] for r in cached_rows}
-
-        # 删除 T-1 / T 缓存（需实时刷新），T-2 之前保留
-        volatile_dates = [d for d in cached_dates if d >= refresh_from]
-        if volatile_dates:
-            cursor.execute('''
-                DELETE FROM stock_price_cache
-                WHERE stock_code = ? AND trade_date >= ? AND trade_date <= ?
-            ''', (stock_code, refresh_from, end_date))
-            conn.commit()
-            cached_dates = {d for d in cached_dates if d < refresh_from}
-            cached_rows = [r for r in cached_rows if r[0] < refresh_from]
-
-        conn.close()  # ★ 释放连接后再做网络请求
-
-        # 构建缓存结果
-        results_map = {}
-        for r in cached_rows:
-            results_map[r[0]] = {
-                'trade_date': r[0], 'open': r[1], 'close': r[2],
-                'high': r[3], 'low': r[4], 'change_pct': r[5], 'volume': r[6]
-            }
-
-        # 判断是否需要从 AkShare 拉取
-        need_fetch = len(cached_dates) == 0
-        if not need_fetch:
-            # 区间触及 T-1 / T 时强制刷新
-            if end_date >= refresh_from:
-                need_fetch = True
-            else:
-                # 对稳定历史区间做轻量完整性校验：仅当首条数据明显晚于 start_date 时回补
-                try:
-                    first_cached = datetime.strptime(cached_rows[0][0], '%Y-%m-%d').date() if cached_rows else None
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
-                    if first_cached and (first_cached - start_dt).days > 3:
-                        need_fetch = True
-                except Exception:
-                    need_fetch = True
-
-        # 阶段2：网络请求（不持有数据库连接）
-        new_records = []
-        if need_fetch:
+        if not rows:
+            # 首次缺数据时按需增量拉取单标的
             try:
-                with StockAnalyzer._akshare_lock:
-                    df = ak.stock_zh_a_hist(
-                        symbol=pure_code,
-                        period="daily",
-                        start_date=start_date.replace('-', ''),
-                        end_date=end_date.replace('-', ''),
-                        adjust="qfq"
-                    )
-
-                if df is not None and not df.empty:
-                    for _, row in df.iterrows():
-                        trade_date = str(row['日期'])[:10]
-                        # 历史稳定日已缓存则跳过；T-1/T 由上方删除后会重写
-                        if trade_date in cached_dates and trade_date < refresh_from:
-                            continue
-
-                        record = {
-                            'trade_date': trade_date,
-                            'open': float(row['开盘']),
-                            'close': float(row['收盘']),
-                            'high': float(row['最高']),
-                            'low': float(row['最低']),
-                            'change_pct': float(row['涨跌幅']),
-                            'volume': float(row['成交量']),
-                        }
-                        results_map[trade_date] = record
-                        new_records.append((stock_code, record))
-
+                self.market_sync.sync_daily_incremental(symbols=[stock_code], include_index=False)
+                rows = self.market_store.get_price_range(
+                    stock_code=stock_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    allow_today_unfinal=allow_today_unfinal,
+                )
             except Exception as e:
-                log_warning(f"获取 {stock_code} 行情失败: {e}")
+                log_warning(f"从持久行情库回补 {stock_code} 失败: {e}")
 
-        # 阶段3：批量写入缓存（重新打开短连接）
-        if new_records:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            for sc, rec in new_records:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO stock_price_cache
-                    (stock_code, trade_date, open, close, high, low, change_pct, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    sc, rec['trade_date'],
-                    rec['open'], rec['close'], rec['high'], rec['low'],
-                    rec['change_pct'], rec['volume']
-                ))
-            conn.commit()
-            conn.close()
+        # 收盘后，如果区间触及当日且当日仍非 final，触发一次收盘冻结
+        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        if (
+            end_date >= today
+            and self.market_store.is_market_closed_now()
+            and not self.market_store.has_final_for_symbol_date(stock_code, today)
+        ):
+            try:
+                self.market_sync.finalize_today_after_close(symbols=[stock_code])
+                rows = self.market_store.get_price_range(
+                    stock_code=stock_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    allow_today_unfinal=False,
+                )
+            except Exception as e:
+                log_warning(f"收盘冻结回补 {stock_code} 失败: {e}")
 
-        # 按日期排序返回
-        return [results_map[d] for d in sorted(results_map.keys())]
+        return [
+            {
+                "trade_date": r["trade_date"],
+                "open": r["open"],
+                "close": r["close"],
+                "high": r["high"],
+                "low": r["low"],
+                "change_pct": r["change_pct"],
+                "volume": r["volume"],
+            }
+            for r in rows
+        ]
 
     def _fetch_index_price(self, start_date: str, end_date: str) -> Dict[str, float]:
         """获取沪深300指数行情（用于计算超额收益）"""
-        index_code = "000300.SH"  # 沪深300
-        today_dt = datetime.now().date()
-        refresh_from = (today_dt - timedelta(days=1)).strftime('%Y-%m-%d')  # T-1 起刷新
-
-        # 阶段1：查缓存（短连接）
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT trade_date, close FROM stock_price_cache
-            WHERE stock_code = ? AND trade_date >= ? AND trade_date <= ?
-            ORDER BY trade_date
-        ''', (index_code, start_date, end_date))
-        cached = cursor.fetchall()
-        cached_map = {r[0]: r[1] for r in cached}
-
-        # 删除 T-1 / T 指数缓存，避免复权/收盘后修正不一致
-        if any(d >= refresh_from for d in cached_map.keys()):
-            cursor.execute('''
-                DELETE FROM stock_price_cache
-                WHERE stock_code = ? AND trade_date >= ? AND trade_date <= ?
-            ''', (index_code, refresh_from, end_date))
-            conn.commit()
-            cached_map = {d: v for d, v in cached_map.items() if d < refresh_from}
-
-        conn.close()  # ★ 释放连接
-
-        need_fetch = len(cached_map) == 0 or end_date >= refresh_from
-        if not need_fetch:
+        index_code = "000300.SH"
+        allow_today_unfinal = not self.market_store.is_market_closed_now()
+        rows = self.market_store.get_price_range(
+            stock_code=index_code,
+            start_date=start_date,
+            end_date=end_date,
+            allow_today_unfinal=allow_today_unfinal,
+        )
+        if not rows:
             try:
-                first_cached = min(datetime.strptime(d, '%Y-%m-%d').date() for d in cached_map.keys())
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
-                if (first_cached - start_dt).days > 3:
-                    need_fetch = True
-            except Exception:
-                need_fetch = True
-
-        if not need_fetch:
-            return cached_map
-
-        # 阶段2：网络请求（不持有数据库连接）
-        try:
-            with StockAnalyzer._akshare_lock:
-                df = ak.stock_zh_index_daily(symbol="sh000300")
-            if df is None or df.empty:
-                return cached_map
-
-            result = {}
-            cache_rows = []
-            for _, row in df.iterrows():
-                trade_date = str(row['date'])[:10]
-                if trade_date < start_date or trade_date > end_date:
-                    continue
-                # 稳定历史日命中缓存直接复用，避免重复写
-                if trade_date in cached_map and trade_date < refresh_from:
-                    result[trade_date] = cached_map[trade_date]
-                    continue
-                close_val = float(row['close'])
-                result[trade_date] = close_val
-                cache_rows.append((
-                    index_code, trade_date, float(row['open']), close_val,
-                    float(row['high']), float(row['low']), 0, float(row['volume'])
-                ))
-
-            # 阶段3：批量写入缓存
-            if cache_rows:
-                conn = self._get_conn()
-                cursor = conn.cursor()
-                cursor.executemany('''
-                    INSERT OR REPLACE INTO stock_price_cache
-                    (stock_code, trade_date, open, close, high, low, change_pct, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', cache_rows)
-                conn.commit()
-                conn.close()
-
-            # 合并保留的稳定历史缓存
-            result.update({d: v for d, v in cached_map.items() if d not in result})
-            return result
-
-        except Exception as e:
-            log_warning(f"获取沪深300指数失败: {e}")
-            return cached_map
+                self.market_sync.sync_daily_incremental(sync_equities=False, include_index=True)
+                rows = self.market_store.get_price_range(
+                    stock_code=index_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    allow_today_unfinal=allow_today_unfinal,
+                )
+            except Exception as e:
+                log_warning(f"获取沪深300指数失败: {e}")
+                return {}
+        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        if end_date >= today and self.market_store.is_market_closed_now():
+            if not self.market_store.has_final_for_symbol_date(index_code, today):
+                try:
+                    self.market_sync.finalize_today_after_close(symbols=[], sync_equities=False)
+                    rows = self.market_store.get_price_range(
+                        stock_code=index_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        allow_today_unfinal=False,
+                    )
+                except Exception as e:
+                    log_warning(f"收盘冻结回补沪深300失败: {e}")
+        return {r["trade_date"]: r["close"] for r in rows if r.get("close") is not None}
 
     # ========== 事件表现计算 ==========
 
@@ -743,10 +661,11 @@ class StockAnalyzer:
             dd = (prices[i]['low'] - base_price) / base_price * 100
             max_drawdown = min(max_drawdown, dd)
 
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+        market_closed = self.market_store.is_market_closed_now()
         today_idx = -1
         for i, p in enumerate(prices):
-            if p['trade_date'] >= today:
+            if (market_closed and p['trade_date'] > today) or ((not market_closed) and p['trade_date'] >= today):
                 today_idx = i
                 break
         if today_idx < 0:
@@ -1108,10 +1027,8 @@ class StockAnalyzer:
         ''', (since_date,))
         update_pending = cursor.fetchall()
 
-        cursor.execute('SELECT MAX(trade_date) FROM stock_price_cache')
-        max_trade_date = (cursor.fetchone() or [None])[0]
-
         conn.close()
+        max_trade_date = self.market_store.get_latest_trade_date(only_final=True)
 
         total_new = len(new_pending)
         total_update = len(update_pending)

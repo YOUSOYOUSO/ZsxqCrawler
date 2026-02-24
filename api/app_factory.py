@@ -9,6 +9,7 @@ from api.routers.columns import router as columns_router
 from api.routers.settings import router as settings_router
 from api.routers.topics import router as topics_router
 from api.routers.scheduler import router as scheduler_router
+from api.routers.market_data import router as market_data_router
 from api.routers.stocks import router as stocks_router
 from api.routers.tasks import router as tasks_router
 
@@ -16,6 +17,7 @@ from api.routers.tasks import router as tasks_router
 def register_core_routers(app: FastAPI) -> None:
     """Register all core routers while preserving existing API paths."""
     app.include_router(scheduler_router)
+    app.include_router(market_data_router)
     app.include_router(stocks_router)
     app.include_router(global_read_router)
     app.include_router(tasks_router)

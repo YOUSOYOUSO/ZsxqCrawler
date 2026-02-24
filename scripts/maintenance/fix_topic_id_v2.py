@@ -21,6 +21,6 @@ def fix(filename):
         f.write(text)
     print(f"Processed {filename}")
 
-files = ["stock_analyzer.py", "global_analyzer.py", "zsxq_columns_database.py", "main.py", "zsxq_database.py"]
+files = ["stock_analyzer.py", "global_analyzer.py", "zsxq_columns_database.py", "app/main.py", "zsxq_database.py"]
 for f in files:
     fix(f)

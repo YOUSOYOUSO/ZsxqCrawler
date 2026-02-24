@@ -42,7 +42,7 @@ def run_group_incremental_pipeline(
     log_callback: LogCallback = None,
 ) -> Dict[str, Any]:
     """Run incremental crawl -> extract -> optional analyze for a single group."""
-    from main import get_crawler_for_group
+    from app.main import get_crawler_for_group
     from modules.analyzers.stock_analyzer import StockAnalyzer
 
     result: Dict[str, Any] = {

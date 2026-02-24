@@ -3,13 +3,13 @@
 
 """
 账号数据迁移脚本
-将 accounts.json 中的账号数据迁移到 SQL 数据库
+将 config/accounts.json 中的账号数据迁移到 SQL 数据库
 """
 
-import os
 import json
 from modules.accounts.accounts_manager import get_accounts, get_group_account_mapping
 from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
+from modules.shared.paths import get_config_path
 from loguru import logger
 
 
@@ -85,9 +85,9 @@ def migrate_accounts():
         logger.info(f"成功迁移 {mapped_count}/{len(group_mapping)} 个群组映射")
 
         # 备份JSON文件
-        json_file = os.path.join(os.path.dirname(__file__), "accounts.json")
-        if os.path.exists(json_file):
-            backup_file = json_file + ".backup"
+        json_file = get_config_path("accounts.json")
+        if json_file.exists():
+            backup_file = json_file.with_suffix(".json.backup")
             logger.info(f"备份 JSON 文件到 {backup_file}")
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -95,8 +95,8 @@ def migrate_accounts():
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
         logger.success("迁移完成！")
-        logger.info("提示：旧的 accounts.json 文件已备份为 accounts.json.backup")
-        logger.info("你可以手动删除 accounts.json 文件，系统将使用新的 SQL 数据库")
+        logger.info("提示：旧的 config/accounts.json 文件已备份为 config/accounts.json.backup")
+        logger.info("你可以手动删除 config/accounts.json 文件，系统将使用新的 SQL 数据库")
 
     except Exception as e:
         logger.error(f"迁移失败: {e}")

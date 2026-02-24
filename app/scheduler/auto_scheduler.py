@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from modules.shared.db_path_manager import get_db_path_manager
 from modules.shared.logger_config import log_info
+from modules.shared.market_data_config import load_market_data_config
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -42,6 +43,8 @@ class AutoScheduler:
             "per_page": 20,
             "calc_window_days": 365,
         }
+        market_cfg = load_market_data_config()
+        self.config["market_data_enabled"] = bool(market_cfg.get("enabled", True))
 
         self.stats: Dict[str, Any] = {
             "round_count": 0,
@@ -233,6 +236,27 @@ class AutoScheduler:
 
             try:
                 from modules.analyzers.global_pipeline import list_groups, run_serial_incremental_pipeline
+
+                if self.config.get("market_data_enabled", True):
+                    try:
+                        from modules.analyzers.market_data_sync import MarketDataSyncService
+
+                        mkt = MarketDataSyncService(log_callback=self.log)
+                        sync_res = await asyncio.to_thread(mkt.sync_daily_incremental)
+                        self.log(
+                            "📦 行情增量同步: "
+                            f"success={sync_res.get('success')}, upserted={sync_res.get('upserted', 0)}, "
+                            f"errors={sync_res.get('errors', 0)}"
+                        )
+                        if mkt.store.is_market_closed_now():
+                            fin_res = await asyncio.to_thread(mkt.finalize_today_after_close)
+                            self.log(
+                                "🧊 收盘冻结检查: "
+                                f"success={fin_res.get('success')}, today_final={fin_res.get('today_final', False)}"
+                            )
+                    except Exception as e:
+                        # fail-open: 行情同步失败不阻塞主流程
+                        self.log(f"⚠️ 行情同步阶段失败（已跳过）: {e}")
 
                 all_groups = list_groups(apply_scan_filter=False)
                 groups, excluded_groups, reason_counts, default_action = self._apply_group_scan_filter(all_groups)

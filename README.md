@@ -1,11 +1,11 @@
 <div align="center">
-  <img src="images/_Image.png" alt="知识星球数据采集器" width="200">
+  <img src="docs/assets/_Image.png" alt="知识星球数据采集器" width="200">
   <h1>知识星球数据采集器</h1>
   <p>知识星球内容爬取与文件下载工具，支持话题采集、文件批量下载等功能</p>
   
   [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
   
-  <img src="images/info.png" alt="群组详情页面" height="400">
+  <img src="docs/assets/info.png" alt="群组详情页面" height="400">
 </div>
 
 ## 项目特性
@@ -35,6 +35,7 @@ frontend/src/lib/      # 前端 API 客户端与类型定义
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/ROUTING_MAP.md`](docs/ROUTING_MAP.md)
 - [`docs/ADR/ADR-0001-layering.md`](docs/ADR/ADR-0001-layering.md)
+- [`docs/migrations/MIGRATION_COMPLETE.md`](docs/migrations/MIGRATION_COMPLETE.md)
 
 维护约定（贡献前建议先看）：
 
@@ -54,22 +55,22 @@ frontend/src/lib/      # 前端 API 客户端与类型定义
 ### Web 界面
 
 <div align="center">
-  <img src="images/home.png" alt="首页界面" height="400">
+  <img src="docs/assets/home.png" alt="首页界面" height="400">
   <p><em>首页 - 群组选择和概览</em></p>
 </div>
 
 <div align="center">
-  <img src="images/config.png" alt="配置页面" height="400">
+  <img src="docs/assets/config.png" alt="配置页面" height="400">
   <p><em>配置页面 - 爬取间隔设置</em></p>
 </div>
 
 <div align="center">
-  <img src="images/log.png" alt="日志页面" height="400">
+  <img src="docs/assets/log.png" alt="日志页面" height="400">
   <p><em>日志页面 - 实时任务执行日志</em></p>
 </div>
 
 <div align="center">
-  <img src="images/column.png" alt="专栏文章页面" height="400">
+  <img src="docs/assets/column.png" alt="专栏文章页面" height="400">
   <p><em>专栏文章页面 - 专栏目录浏览、文章内容展示与视频下载</em></p>
 </div>
 
@@ -110,7 +111,7 @@ uv sync
 
 ```bash
 # 1. 启动后端API服务
-uv run main.py
+uv run app/main.py
 
 # 2. 启动前端服务（新开终端窗口）
 cd frontend
@@ -131,17 +132,17 @@ NEXT_PUBLIC_API_BASE_URL=http://192.168.x.x:8208
 
 ```bash
 # 运行交互式命令行工具
-uv run zsxq_interactive_crawler.py
+uv run modules/zsxq/zsxq_interactive_crawler.py
 ```
 
 <div align="center">
-  <img src="images/QQ20250703-170055.png" alt="命令行界面" height="400">
+  <img src="docs/assets/QQ20250703-170055.png" alt="命令行界面" height="400">
   <p><em>命令行界面 - 交互式操作控制台</em></p>
 </div>
 
 ## 数据存储与下载路径
 
-默认情况下，所有数据都会保存到**项目根目录**下的 `output/databases` 目录中（项目根目录即与 `config.toml` 同级的目录），不同群组会按照 `group_id` 分目录存放。
+默认情况下，所有数据都会保存到**项目根目录**下的 `output/databases` 目录中（项目根目录即与 `config/app.toml` 同级的目录），不同群组会按照 `group_id` 分目录存放。
 
 - **话题 / 文章内容数据库**: `output/databases/{group_id}/zsxq_topics_{group_id}.db`  
   - 保存所有话题、文章正文、评论等结构化数据（Web 界面展示内容都来自这里）。

@@ -62,7 +62,7 @@ class GlobalTaskService:
     def start_global_analyze_performance(self, background_tasks: BackgroundTasks, force: bool = False):
         task_id = self._create_running_task(
             prefix="global_analyze_performance",
-            task_type="global_analyze",
+            task_type="global_analyze_performance",
             message="正在初始化全区收益计算...",
         )
         background_tasks.add_task(self._run_global_analyze_performance, task_id, force)

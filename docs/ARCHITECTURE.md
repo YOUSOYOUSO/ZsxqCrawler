@@ -5,7 +5,7 @@
 本次重构目标：
 
 - 保持既有 API 路径与参数 **100% 兼容**
-- 将 `main.py` 从“路由+编排+状态存储”转为“入口+装配”
+- 将 `app/main.py` 从“路由+编排+状态存储”转为“入口+装配”
 - 以 `api/routers` + `api/services` + `api/schemas` 建立稳定分层
 - 将任务状态统一收敛到 `TaskRuntime`
 
@@ -32,8 +32,8 @@
 - 负责：Pydantic 模型与域模型定义
 - 规则：请求/响应模型不在 router 中重复定义
 
-### 2.4 入口层（`main.py` + `api/app_factory.py`）
-- `main.py`：应用启动、生命周期、历史兼容逻辑
+### 2.4 入口层（`app/main.py` + `api/app_factory.py`）
+- `app/main.py`：应用启动、生命周期、历史兼容逻辑
 - `api/app_factory.py`：统一路由注册
 
 ---
@@ -79,7 +79,7 @@ docs/
     ADR-0001-layering.md
 scripts/
   maintenance/
-main.py
+app/main.py
 ```
 
 ---
@@ -112,7 +112,7 @@ main.py
 - 调度器：`api/routers/scheduler.py`
 - 股票与单群 AI：`api/routers/stocks.py`
 - 任务查询与日志：`api/routers/tasks.py`
-- 其余域逐步从 `main.py` 迁移到对应 router（crawl/files/topics/groups/settings/columns）
+- 其余域逐步从 `app/main.py` 迁移到对应 router（crawl/files/topics/groups/settings/columns）
 
 详见 `docs/ROUTING_MAP.md`。
 
@@ -122,15 +122,15 @@ main.py
 
 ### Step A：迁移前检查
 
-1. `python3 -m py_compile main.py api/routers/*.py api/services/*.py api/schemas/*.py`
-2. 记录 `main.py` 路由数（`rg "@app\\." main.py`）
+1. `python3 -m py_compile app/main.py api/routers/*.py api/services/*.py api/schemas/*.py`
+2. 记录 `app/main.py` 路由数（`rg "@app\\." app/main.py`）
 3. 保存 API 冒烟结果（关键路径）
 
 ### Step B：迁移规则
 
 1. 新 router 先做“代理迁移”（调用 legacy handler），确保不改行为
 2. 再将编排逻辑下沉至 service，并替换代理
-3. 完成后删除 `main.py` 对应 `@app.*` 装饰器
+3. 完成后删除 `app/main.py` 对应 `@app.*` 装饰器
 
 ### Step C：验收
 
@@ -141,14 +141,14 @@ main.py
 ### Step D：回滚
 
 1. 回滚单一 router 提交
-2. 恢复 `main.py` 装饰器绑定
+2. 恢复 `app/main.py` 装饰器绑定
 3. 保持 `TaskRuntime` 不回滚（除非出现状态一致性问题）
 
 ---
 
 ## 7. 风险清单与控制
 
-1. 路由重复注册：迁移后必须移除 `main.py` 同路径装饰器
+1. 路由重复注册：迁移后必须移除 `app/main.py` 同路径装饰器
 2. 任务状态不一致：只允许通过 `TaskRuntime` 改写
 3. 循环导入：router 不做顶层 `import main` 业务依赖，必要时函数内延迟导入
 

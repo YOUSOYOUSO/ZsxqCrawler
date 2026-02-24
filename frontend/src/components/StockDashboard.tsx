@@ -281,6 +281,7 @@ export default function StockDashboard({
     const [mentionTotal, setMentionTotal] = useState(0);
     const [returnPeriod, setReturnPeriod] = useState('return_5d');
     const [searchStock, setSearchStock] = useState(externalSearchTerm || '');
+    const [debouncedSearchStock, setDebouncedSearchStock] = useState(externalSearchTerm || '');
 
     // Time range filter state - default 30d (approx 20 working days)
     const [winRateRange, setWinRateRange] = useState<string>('30d');
@@ -315,6 +316,9 @@ export default function StockDashboard({
     const [expandedSectorTopics, setExpandedSectorTopics] = useState<Set<string>>(new Set());
     const sectorTopicsPageSize = 20;
     const sectorDrawerScrollRef = useRef<HTMLDivElement>(null);
+    const mentionsAbortRef = useRef<AbortController | null>(null);
+    const VIEW_CACHE_TTL_MS = 60_000;
+    const viewCacheRef = useRef<Record<string, { ts: number; key: string; payload: any }>>({});
 
     // AI analysis state
     const [aiConfig, setAiConfig] = useState<any>(null);
@@ -423,6 +427,19 @@ export default function StockDashboard({
         return () => clearInterval(timer);
     }, [scanTaskId, scanning]);
 
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearchStock(searchStock.trim());
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [searchStock]);
+
+    useEffect(() => {
+        return () => {
+            mentionsAbortRef.current?.abort();
+        };
+    }, []);
+
     /* ── loaders ── */
     const loadStats = useCallback(async () => {
         try {
@@ -438,44 +455,49 @@ export default function StockDashboard({
     }, [groupId, isGlobal]);
 
     const loadMentions = useCallback(async () => {
+        mentionsAbortRef.current?.abort();
+        const controller = new AbortController();
+        mentionsAbortRef.current = controller;
         if (isGlobal) {
-            // Global mentions are not supported in the same way, we might load groups instead
-            const res = await apiClient.getGlobalGroups();
-            const rows = Array.isArray(res) ? res : (res?.data || res?.groups || []);
-            setGlobalGroups(rows);
+            try {
+                // Global mentions are not supported in the same way, we might load groups instead
+                const res = await apiClient.getGlobalGroups(controller.signal);
+                if (controller.signal.aborted) return;
+                const rows = Array.isArray(res) ? res : (res?.data || res?.groups || []);
+                setGlobalGroups(rows);
+            } catch (err: any) {
+                if (err?.name === 'AbortError') return;
+                console.warn('[StockDashboard] Failed to load global groups:', err);
+            }
             return;
         }
         try {
-            console.log('[StockDashboard] Loading topics...', { groupId, page: mentionPage });
-            // Use getStockTopics instead of getStockMentions
-            const res = (await apiClient.getStockTopics(groupId!, mentionPage, 20)) as any;
-
-            console.log('[StockDashboard] Topics loaded:', res);
-            setTopics(res.items || []);
-            setMentionTotal(res.total || 0);
-
-            // Still fetch plain mentions for search if user searches? 
-            // Actually, search is not supported in topic view yet. 
-            // If searchStock is present, we might want to fall back to mention list or filter topics?
-            // For now, let's assume search is disabled or we clear topics.
-            if (searchStock) {
-                const res2 = await apiClient.getStockMentions(groupId!, {
+            if (debouncedSearchStock) {
+                const res = await apiClient.getStockMentions(groupId!, {
                     page: mentionPage,
                     per_page: 20,
-                    stock_code: searchStock,
+                    stock_code: debouncedSearchStock,
                     sort_by: 'mention_time',
                     order: 'desc',
-                });
-                setMentions(res2.items || res2.mentions || []);
+                }, controller.signal);
+                if (controller.signal.aborted) return;
+                setTopics([]);
+                setMentions(res.items || res.mentions || []);
+                setMentionTotal(res.total || res.pagination?.total || 0);
             } else {
+                console.log('[StockDashboard] Loading topics...', { groupId, page: mentionPage });
+                const res = (await apiClient.getStockTopics(groupId!, mentionPage, 20, controller.signal)) as any;
+                if (controller.signal.aborted) return;
+                setTopics(res.items || []);
+                setMentionTotal(res.total || 0);
                 setMentions([]);
             }
-
         } catch (err: any) {
+            if (err?.name === 'AbortError') return;
             console.error('[StockDashboard] Failed to load topics:', err);
             // Don't set global error for mentions failure to avoid blocking other views
         }
-    }, [groupId, mentionPage, searchStock, isGlobal]);
+    }, [groupId, mentionPage, debouncedSearchStock, isGlobal]);
 
     const loadGroupMeta = useCallback(async () => {
         if (!isGlobal) return;
@@ -507,6 +529,16 @@ export default function StockDashboard({
 
     const loadWinRate = useCallback(async () => {
         try {
+            const cacheKey = [
+                isGlobal, groupId, returnPeriod, winRateMinMentions, winRateStart, winRateEnd,
+                winRateSortColumn, winRateSortOrder, winRatePage, winRatePageSize
+            ].join('|');
+            const cached = viewCacheRef.current.winrate;
+            if (cached && cached.key === cacheKey && Date.now() - cached.ts < VIEW_CACHE_TTL_MS) {
+                setWinRate(cached.payload.data || []);
+                setWinRateTotal(cached.payload.total || 0);
+                return;
+            }
             console.log('[StockDashboard] Loading win rate...', { start: winRateStart, end: winRateEnd, sort: winRateSortColumn, order: winRateSortOrder });
             if (isGlobal) {
                 const res = await apiClient.getGlobalWinRate(
@@ -522,6 +554,7 @@ export default function StockDashboard({
                 );
                 setWinRate(res?.data || []);
                 setWinRateTotal(res?.total || 0);
+                viewCacheRef.current.winrate = { ts: Date.now(), key: cacheKey, payload: { data: res?.data || [], total: res?.total || 0 } };
             } else {
                 const res = await apiClient.getStockWinRate(groupId!, {
                     min_mentions: winRateMinMentions,
@@ -538,9 +571,11 @@ export default function StockDashboard({
                 if (res && res.data && typeof res.total === 'number') {
                     setWinRate(res.data);
                     setWinRateTotal(res.total);
+                    viewCacheRef.current.winrate = { ts: Date.now(), key: cacheKey, payload: { data: res.data, total: res.total } };
                 } else if (Array.isArray(res)) {
                     setWinRate(res);
                     setWinRateTotal(res.length);
+                    viewCacheRef.current.winrate = { ts: Date.now(), key: cacheKey, payload: { data: res, total: res.length } };
                 } else {
                     setWinRate([]);
                     setWinRateTotal(0);
@@ -553,12 +588,19 @@ export default function StockDashboard({
 
     const loadSectors = useCallback(async () => {
         try {
+            const cacheKey = [isGlobal, groupId, sectorStart, sectorEnd].join('|');
+            const cached = viewCacheRef.current.sector;
+            if (cached && cached.key === cacheKey && Date.now() - cached.ts < VIEW_CACHE_TTL_MS) {
+                setSectors(cached.payload || []);
+                return;
+            }
             console.log('[StockDashboard] Loading sectors...', { start: sectorStart, end: sectorEnd });
             const res = isGlobal
                 ? await apiClient.getGlobalSectorHeat(sectorStart, sectorEnd)
                 : await apiClient.getSectorHeat(groupId!, sectorStart, sectorEnd);
             console.log('[StockDashboard] Sectors loaded:', res?.length);
             setSectors(res || []);
+            viewCacheRef.current.sector = { ts: Date.now(), key: cacheKey, payload: res || [] };
         } catch (err) {
             console.error('[StockDashboard] Failed to load sectors:', err);
         }
@@ -566,6 +608,12 @@ export default function StockDashboard({
 
     const loadSignals = useCallback(async () => {
         try {
+            const cacheKey = [isGlobal, groupId, signalStart, signalEnd, signalMinMentions].join('|');
+            const cached = viewCacheRef.current.signals;
+            if (cached && cached.key === cacheKey && Date.now() - cached.ts < VIEW_CACHE_TTL_MS) {
+                setSignals(cached.payload || []);
+                return;
+            }
             console.log('[StockDashboard] Loading signals...', { start: signalStart, end: signalEnd });
             const lookbackDays = 30; // Default fallback if needed, but we use explicit dates now
             const res = isGlobal
@@ -573,6 +621,7 @@ export default function StockDashboard({
                 : await apiClient.getStockSignals(groupId!, lookbackDays, signalMinMentions, signalStart, signalEnd);
             console.log('[StockDashboard] Signals loaded:', res?.length);
             setSignals(res || []);
+            viewCacheRef.current.signals = { ts: Date.now(), key: cacheKey, payload: res || [] };
         } catch (err) {
             console.error('[StockDashboard] Failed to load signals:', err);
         }
@@ -624,13 +673,13 @@ export default function StockDashboard({
 
     const loadAll = useCallback(async () => {
         setLoading(true);
-        const jobs: Array<Promise<any>> = [loadStats(), loadMentions(), loadSectors()];
+        const jobs: Array<Promise<any>> = [loadStats(), loadMentions()];
         if (isGlobal) {
             jobs.push(loadGroupMeta());
         }
         await Promise.all(jobs);
         setLoading(false);
-    }, [loadStats, loadMentions, loadSectors, loadGroupMeta, isGlobal]);
+    }, [loadStats, loadMentions, loadGroupMeta, isGlobal]);
 
     useEffect(() => { loadAll(); }, [loadAll]);
     useEffect(() => { loadFeatures(); }, [loadFeatures]);
@@ -646,7 +695,7 @@ export default function StockDashboard({
     // For local mentions pagination
     useEffect(() => {
         if (!isGlobal) loadMentions();
-    }, [mentionPage, searchStock, loadMentions, isGlobal]);
+    }, [mentionPage, debouncedSearchStock, loadMentions, isGlobal]);
 
     useEffect(() => {
         if (activeView === 'winrate') loadWinRate();
@@ -680,6 +729,7 @@ export default function StockDashboard({
     const handleScan = async (force = false) => {
         setScanning(true);
         setShowTaskLog(true);
+        viewCacheRef.current = {};
         try {
             const res = isGlobal
                 ? await apiClient.scanGlobal(force)
@@ -711,6 +761,7 @@ export default function StockDashboard({
         setDeletingGroupId(gid);
         try {
             await apiClient.clearTopicDatabase(gid);
+            viewCacheRef.current = {};
             toast.success(`已删除群组 ${gid} 的所有话题数据`);
             await Promise.all([loadStats(), loadMentions(), loadSectors(), loadSignals(), loadWinRate()]);
             if (onDataChanged) {

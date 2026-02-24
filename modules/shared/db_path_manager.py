@@ -4,6 +4,7 @@
 import os
 from typing import Dict, Any
 from pathlib import Path
+from modules.shared.paths import PROJECT_ROOT, get_config_path
 
 _DEFAULT_CONFIG_TOML = """# 知识星球数据采集器配置文件
 # 首次启动自动生成；请按需修改
@@ -21,6 +22,18 @@ dir = "downloads"
 [database]
 # 可选：自定义数据库路径；留空则由路径管理器自动管理
 # path = ""
+
+[market_data]
+# 本地持久化行情库
+enabled = true
+db_path = "output/databases/akshare_market.db"
+adjust = "qfq"
+# 北京时间收盘冻结时点（HH:MM）
+close_finalize_time = "15:05"
+bootstrap_mode = "full_history"
+bootstrap_batch_size = 200
+sync_retry_max = 3
+sync_retry_backoff_seconds = 1.0
 """
 
 
@@ -28,8 +41,7 @@ class DatabasePathManager:
     """数据库路径管理器 - 统一管理所有数据库文件的存储位置"""
     
     def __init__(self, base_dir: str = "output/databases"):
-        # 从 modules/shared/db_path_manager.py 回溯到仓库根目录
-        self.project_root = str(Path(__file__).resolve().parents[2])
+        self.project_root = str(PROJECT_ROOT)
         self._ensure_config_toml()
 
         # 确保使用项目根目录的绝对路径
@@ -38,17 +50,17 @@ class DatabasePathManager:
         self._ensure_base_dir()
 
     def _ensure_config_toml(self) -> None:
-        """确保 config.toml 存在（不存在则创建默认模板）。"""
-        config_path = os.path.join(self.project_root, "config.toml")
-        if os.path.exists(config_path):
+        """确保 config/app.toml 存在（不存在则创建默认模板）。"""
+        config_path = get_config_path("app.toml")
+        if config_path.exists():
             return
 
         try:
-            with open(config_path, "w", encoding="utf-8") as f:
+            with config_path.open("w", encoding="utf-8") as f:
                 f.write(_DEFAULT_CONFIG_TOML)
         except Exception as e:
             # 不能因为写配置失败导致程序无法启动；后续 load_config 会给出提示
-            print(f"⚠️ 无法自动创建 config.toml: {e}")
+            print(f"⚠️ 无法自动创建 config/app.toml: {e}")
     
     def _ensure_base_dir(self):
         """确保基础目录存在"""
@@ -95,6 +107,10 @@ class DatabasePathManager:
     def get_global_ai_db_path(self) -> str:
         """获取全局AI分析数据库路径"""
         return os.path.join(self.base_dir, "zsxq_global_ai.db")
+
+    def get_market_data_db_path(self) -> str:
+        """获取全局行情数据库路径"""
+        return os.path.join(self.base_dir, "akshare_market.db")
     
     def list_group_databases(self, group_id: str) -> Dict[str, str]:
         """列出指定群组的所有数据库文件"""

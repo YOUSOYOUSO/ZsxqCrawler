@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -9,9 +10,8 @@ import {
     DialogDescription,
 } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api';
-import { Loader2, TrendingUp, Calendar, MessageSquare, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Loader2, Calendar, AlertTriangle } from 'lucide-react';
 
 interface StockDetailDialogProps {
     stockCode: string | null;

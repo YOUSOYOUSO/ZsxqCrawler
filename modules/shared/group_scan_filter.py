@@ -8,8 +8,9 @@ import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Tuple
+from modules.shared.paths import get_config_path
 
-CONFIG_FILE = "group_scan_filter.json"
+CONFIG_FILE = str(get_config_path("group_scan_filter.json"))
 BJ_TZ = timezone(timedelta(hours=8))
 
 _DEFAULT = {

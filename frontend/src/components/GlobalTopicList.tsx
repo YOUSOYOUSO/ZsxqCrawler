@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import ImageGallery from '@/components/ImageGallery';
@@ -49,7 +50,6 @@ export default function GlobalTopicList({ searchTerm, onStatsUpdate, onMentionCl
   const [items, setItems] = useState<GlobalTopicItem[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const [whitelistGroupCount, setWhitelistGroupCount] = useState(0);
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [topicDetails, setTopicDetails] = useState<Map<string, any>>(new Map());
   const inFlightRef = useRef<Map<string, Promise<any>>>(new Map());
@@ -66,7 +66,6 @@ export default function GlobalTopicList({ searchTerm, onStatsUpdate, onMentionCl
       const newTotal = res?.total || 0;
       const newWhitelist = res?.whitelist_group_count || 0;
       setTotal(newTotal);
-      setWhitelistGroupCount(newWhitelist);
       if (onStatsUpdate) {
         onStatsUpdate({ whitelistGroupCount: newWhitelist, total: newTotal });
       }

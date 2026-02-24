@@ -15,7 +15,6 @@ import TaskPanel from '@/components/TaskPanel';
 import ConfigPanel from '@/components/ConfigPanel';
 import GroupSelector from '@/components/GroupSelector';
 import AccountPanel from '@/components/AccountPanel';
-import { toast } from 'sonner';
 
 export default function Home() {
   const [stats, setStats] = useState<DatabaseStats | null>(null);

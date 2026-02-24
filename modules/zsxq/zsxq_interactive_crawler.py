@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, List
 from modules.zsxq.zsxq_database import ZSXQDatabase
 from modules.zsxq.zsxq_file_downloader import ZSXQFileDownloader
 from modules.shared.db_path_manager import get_db_path_manager
+from modules.shared.paths import get_config_path
 import os
 import argparse
 try:
@@ -1783,29 +1784,16 @@ def load_config():
     if tomllib is None:
         return None
 
-    # 尝试多个可能的配置文件路径
-    config_paths = [
-        "config.toml",           # 当前目录
-        "../config.toml",        # 上级目录（从backend目录运行时）
-        "../../config.toml"      # 上上级目录
-    ]
-
-    config_file = None
-    for path in config_paths:
-        if os.path.exists(path):
-            config_file = path
-            break
-
-    if config_file is None:
-        print("⚠️ 未找到config.toml配置文件，请先创建并配置")
-        print("💡 可以复制config.toml.example为config.toml并修改")
+    config_file = get_config_path("app.toml")
+    if not config_file.exists():
+        print("⚠️ 未找到 config/app.toml 配置文件，请先创建并配置")
         return None
     
     try:
         with open(config_file, 'rb') as f:
             config = tomllib.load(f)
         
-        print("✅ 已从config.toml加载配置")
+        print("✅ 已从 config/app.toml 加载配置")
         return config
     except Exception as e:
         print(f"❌ 加载配置文件出错: {e}")
@@ -1835,10 +1823,10 @@ def main():
     
     # 检查配置是否已修改
     if COOKIE == "your_cookie_here" or not COOKIE:
-        print("⚠️ 请先在config.toml中配置您的 cookie")
+        print("⚠️ 请先在 config/app.toml 中配置您的 cookie")
         return
     if GROUP_ID == "your_group_id_here" or not GROUP_ID:
-        print("⚠️ 交互式命令行模式仍需手动指定单个群组ID，请在 config.toml 中添加 [auth].group_id")
+        print("⚠️ 交互式命令行模式仍需手动指定单个群组ID，请在 config/app.toml 中添加 [auth].group_id")
         return
     
     # 创建交互式爬虫

@@ -21,6 +21,7 @@ except ImportError:
         tomllib = None  # type: ignore
 
 from modules.shared.logger_config import log_info, log_warning, log_error
+from modules.shared.paths import get_config_path
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -258,7 +259,7 @@ class AIAnalyzer:
         }
 
     def _load_config(self):
-        """从 config.toml 或环境变量加载 AI 配置"""
+        """从 config/app.toml 或环境变量加载 AI 配置"""
         # 优先环境变量
         self._api_key = os.environ.get("DEEPSEEK_API_KEY")
         base = os.environ.get("DEEPSEEK_BASE_URL")
@@ -271,25 +272,23 @@ class AIAnalyzer:
         if self._api_key:
             return
 
-        # 尝试从 config.toml 读取
+        # 尝试从 config/app.toml 读取
         if tomllib is None:
             return
 
-        config_paths = ["config.toml", "../config.toml"]
-        for path in config_paths:
-            if os.path.exists(path):
-                try:
-                    with open(path, 'rb') as f:
-                        config = tomllib.load(f)
-                    ai_cfg = config.get('ai', {})
-                    self._api_key = ai_cfg.get('api_key', '')
-                    if ai_cfg.get('base_url'):
-                        self._base_url = ai_cfg['base_url']
-                    if ai_cfg.get('model'):
-                        self._model = ai_cfg['model']
-                    break
-                except Exception as e:
-                    log_warning(f"读取AI配置失败: {e}")
+        config_path = get_config_path("app.toml")
+        if config_path.exists():
+            try:
+                with config_path.open('rb') as f:
+                    config = tomllib.load(f)
+                ai_cfg = config.get('ai', {})
+                self._api_key = ai_cfg.get('api_key', '')
+                if ai_cfg.get('base_url'):
+                    self._base_url = ai_cfg['base_url']
+                if ai_cfg.get('model'):
+                    self._model = ai_cfg['model']
+            except Exception as e:
+                log_warning(f"读取AI配置失败: {e}")
 
     @property
     def is_configured(self) -> bool:
@@ -304,15 +303,15 @@ class AIAnalyzer:
         }
 
     def update_config(self, api_key: str, base_url: str = None, model: str = None):
-        """更新 AI 配置到 config.toml"""
+        """更新 AI 配置到 config/app.toml"""
         self._api_key = api_key
         if base_url:
             self._base_url = base_url
         if model:
             self._model = model
 
-        # 读取现有 config.toml
-        config_path = "config.toml"
+        # 读取现有 config/app.toml
+        config_path = str(get_config_path("app.toml"))
         content = ""
         if os.path.exists(config_path):
             with open(config_path, 'r', encoding='utf-8') as f:

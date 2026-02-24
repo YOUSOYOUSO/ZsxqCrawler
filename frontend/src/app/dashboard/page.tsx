@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { Menu, RefreshCw, Activity, Globe, ArrowLeft, Search } from 'lucide-react';
-import { apiClient, Task } from '@/lib/api';
+import { apiClient, Task, TaskSummaryResponse } from '@/lib/api';
 import type { GlobalHotWordItem, GlobalHotWordResponse } from '@/lib/api';
 import StockDashboard from '@/components/StockDashboard';
 import TaskLogViewer from '@/components/TaskLogViewer';
@@ -244,6 +244,66 @@ export default function DashboardPage() {
     }
     setActiveTab('logs');
   };
+
+  const taskSourceLabel = useCallback((taskType?: string) => {
+    const t = String(taskType || '').trim();
+    if (!t) return '系统任务';
+    if (t.startsWith('global_analyze_performance') || t.startsWith('global_analyze')) return '全区收益计算';
+    if (t.startsWith('global_crawl')) return '全区话题采集';
+    if (t.startsWith('global_files_collect')) return '全区文件收集';
+    if (t.startsWith('global_files_download')) return '全区文件下载';
+    if (t.startsWith('global_cleanup_blacklist')) return '黑名单数据清理';
+    if (t.startsWith('global_scan')) return '全局扫描';
+    if (t.startsWith('stock_scan_')) return '群组收益扫描';
+    return '系统任务';
+  }, []);
+
+  const pickRunningGlobalTask = useCallback((summary: TaskSummaryResponse | null | undefined): Task | null => {
+    if (!summary) return null;
+    const byTaskType = summary.running_by_task_type || {};
+    const byCategory = summary.running_by_type || {};
+    const candidates: Array<Task | undefined> = [
+      byTaskType['global_analyze_performance'],
+      byTaskType['global_analyze'],
+      byTaskType['global_crawl'],
+      byTaskType['global_files_collect'],
+      byTaskType['global_files_download'],
+      byTaskType['global_cleanup_blacklist'],
+      byTaskType['global_scan'],
+      byCategory['analyze'],
+      byCategory['crawl'],
+      byCategory['files'],
+    ];
+    return (candidates.find(Boolean) as Task | undefined) || null;
+  }, []);
+
+  const recoverLogTaskIfNeeded = useCallback(async () => {
+    // 已经绑定到运行中任务时不抢占
+    if (logTaskId && currentTask && ['pending', 'running', 'stopping'].includes(currentTask.status)) {
+      return;
+    }
+    try {
+      const summary = await apiClient.getTaskSummary();
+      const runningTask = pickRunningGlobalTask(summary);
+      if (!runningTask?.task_id) return;
+      setLogTaskId(runningTask.task_id);
+      setLogSourceLabel(taskSourceLabel(runningTask.type));
+      setCurrentTask(runningTask);
+    } catch (error) {
+      console.warn('Failed to recover running task for logs:', error);
+    }
+  }, [currentTask, logTaskId, pickRunningGlobalTask, taskSourceLabel]);
+
+  useEffect(() => {
+    void recoverLogTaskIfNeeded();
+  }, [recoverLogTaskIfNeeded]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void recoverLogTaskIfNeeded();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [recoverLogTaskIfNeeded]);
 
   const handleToggleScheduler = async () => {
     setLoadingFlags(prev => ({ ...prev, scheduler: true }));

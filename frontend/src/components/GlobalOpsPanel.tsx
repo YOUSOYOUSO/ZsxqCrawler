@@ -236,7 +236,7 @@ export default function GlobalOpsPanel({
     setGlobalFileDownloadTaskId(filesDownloadTask?.task_id || null);
     setGlobalFileDownloadTaskStatus(String(filesDownloadTask?.status || 'idle'));
 
-    const analyzeTask = pickTaskType('global_analyze_performance') || pickTask('analyze');
+    const analyzeTask = pickTaskType('global_analyze_performance') || pickTaskType('global_analyze');
     setGlobalPerformanceTaskId(analyzeTask?.task_id || null);
     setGlobalPerformanceTaskStatus(String(analyzeTask?.status || 'idle'));
 
