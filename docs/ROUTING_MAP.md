@@ -15,6 +15,10 @@
 
 已完成从 `main.py` 下沉到 `api/services/global_task_service.py` 的接口：
 
+- `/api/global/crawl`
+- `/api/global/files/collect`
+- `/api/global/files/download`
+- `/api/global/analyze/performance`
 - `/api/stocks/exclude/cleanup`
 - `/api/global/scan-filter/cleanup-blacklist`
 - `/api/global/scan`

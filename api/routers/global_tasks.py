@@ -9,30 +9,22 @@ service = GlobalTaskService()
 
 @router.post("/api/global/crawl")
 def api_global_crawl(request: GlobalCrawlRequest, background_tasks: BackgroundTasks):
-    import main as legacy
-
-    return service.start(legacy.api_global_crawl, background_tasks, request)
+    return service.start_global_crawl(request=request, background_tasks=background_tasks)
 
 
 @router.post("/api/global/files/collect")
 def api_global_files_collect(request: GlobalFileCollectRequest, background_tasks: BackgroundTasks):
-    import main as legacy
-
-    return service.start(legacy.api_global_files_collect, background_tasks, request)
+    return service.start_global_files_collect(request=request, background_tasks=background_tasks)
 
 
 @router.post("/api/global/files/download")
 def api_global_files_download(request: GlobalFileDownloadRequest, background_tasks: BackgroundTasks):
-    import main as legacy
-
-    return service.start(legacy.api_global_files_download, background_tasks, request)
+    return service.start_global_files_download(request=request, background_tasks=background_tasks)
 
 
 @router.post("/api/global/analyze/performance")
 def api_global_analyze_performance(background_tasks: BackgroundTasks, force: bool = False):
-    import main as legacy
-
-    return service.start(legacy.api_global_analyze_performance, background_tasks, force=force)
+    return service.start_global_analyze_performance(background_tasks=background_tasks, force=force)
 
 
 @router.post("/api/stocks/exclude/cleanup")
