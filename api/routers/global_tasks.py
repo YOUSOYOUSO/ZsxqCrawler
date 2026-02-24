@@ -37,20 +37,18 @@ def api_global_analyze_performance(background_tasks: BackgroundTasks, force: boo
 
 @router.post("/api/stocks/exclude/cleanup")
 async def cleanup_excluded_stocks(scope: str = "all", group_id: str | None = None):
-    import main as legacy
-
-    return await legacy.cleanup_excluded_stocks(scope=scope, group_id=group_id)
+    return service.cleanup_excluded_stocks(scope=scope, group_id=group_id)
 
 
 @router.post("/api/global/scan-filter/cleanup-blacklist")
 async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
-    import main as legacy
-
-    return await legacy.cleanup_blacklist_data(background_tasks=background_tasks)
+    return service.start_cleanup_blacklist(background_tasks=background_tasks)
 
 
 @router.post("/api/global/scan")
 def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_non_stock: bool = False):
-    import main as legacy
-
-    return legacy.scan_global(background_tasks=background_tasks, force=force, exclude_non_stock=exclude_non_stock)
+    return service.start_scan_global(
+        background_tasks=background_tasks,
+        force=force,
+        exclude_non_stock=exclude_non_stock,
+    )

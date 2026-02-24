@@ -13,6 +13,12 @@
 | `/api/tasks/*` | `api/routers/tasks.py` | 任务查询/停止/日志/SSE |
 | `/api/global/crawl` 等任务型 global 接口 | `api/routers/global_tasks.py` | 全局任务编排 |
 
+已完成从 `main.py` 下沉到 `api/services/global_task_service.py` 的接口：
+
+- `/api/stocks/exclude/cleanup`
+- `/api/global/scan-filter/cleanup-blacklist`
+- `/api/global/scan`
+
 ## Legacy In Main (to be migrated)
 
 以下路径仍在 `main.py` 直接定义，按域分批迁移：
