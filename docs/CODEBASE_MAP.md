@@ -27,7 +27,7 @@ This document provides a quick navigation map for humans and AI agents.
 
 ## Top-Level Entry Files
 
-- `app/main.py`: FastAPI app entry + compatibility glue
+- `app/main.py`: FastAPI app entry (lifespan/CORS/router registration/scheduler bridge only)
 - `app/scheduler/auto_scheduler.py`: scheduler orchestration
 - `app/runtime/image_cache_manager.py`: runtime image cache service
 

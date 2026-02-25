@@ -42,8 +42,9 @@ def run_group_incremental_pipeline(
     log_callback: LogCallback = None,
 ) -> Dict[str, Any]:
     """Run incremental crawl -> extract -> optional analyze for a single group."""
-    from app.main import get_crawler_for_group
+    from api.services.account_resolution_service import get_cookie_for_group
     from modules.analyzers.stock_analyzer import StockAnalyzer
+    from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler
 
     result: Dict[str, Any] = {
         "group_id": group_id,
@@ -54,7 +55,11 @@ def run_group_incremental_pipeline(
         "ok": False,
     }
 
-    crawler = get_crawler_for_group(group_id, log_callback=lambda msg: _log(log_callback, f"  [{group_id}] {msg}"))
+    cookie = get_cookie_for_group(group_id)
+    if not cookie or cookie == "your_cookie_here":
+        raise RuntimeError(f"group {group_id} missing valid cookie")
+    db_path = get_db_path_manager().get_topics_db_path(group_id)
+    crawler = ZSXQInteractiveCrawler(cookie, group_id, db_path, log_callback=lambda msg: _log(log_callback, f"  [{group_id}] {msg}"))
     crawl_res = crawler.crawl_incremental(pages=pages, per_page=per_page)
     result["crawl"] = crawl_res or {}
 
