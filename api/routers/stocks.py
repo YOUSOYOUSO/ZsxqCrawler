@@ -1,14 +1,16 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from modules.analyzers.ai_analyzer import AIAnalyzer
 from modules.shared.db_path_manager import get_db_path_manager
 from modules.analyzers.stock_analyzer import StockAnalyzer
 
 from api.schemas.models import AIConfigModel
+from api.services.stock_scan_service import StockScanService
 
 router = APIRouter(tags=["stocks", "ai"])
+scan_service = StockScanService()
 
 
 def _get_ai_analyzer(group_id: str) -> AIAnalyzer:
@@ -151,6 +153,13 @@ def get_stock_stats(group_id: str):
         return analyzer.get_summary_stats()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
+
+
+
+
+@router.post("/api/groups/{group_id}/stock/scan")
+def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: bool = False):
+    return scan_service.start_scan(group_id=group_id, background_tasks=background_tasks, force=force)
 
 
 @router.get("/api/ai/config")

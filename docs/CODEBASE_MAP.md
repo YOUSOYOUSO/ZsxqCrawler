@@ -10,6 +10,14 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/global_crawl_service.py`: owns global crawl flow
 - `api/services/global_analyze_service.py`: owns global performance analyze flow
 - `api/services/global_file_task_service.py`: owns global file collect/download flows
+- `api/services/task_facade.py`: task state/log/stop/stream facade
+- `api/services/stock_scan_service.py`: group stock scan task orchestration
+- `api/services/global_scan_filter_service.py`: scan-filter config + preview read/write
+- `api/services/database_stats_service.py`: aggregated topic/file database statistics
+- `api/services/columns_service.py`: columns read/fetch/stat/cleanup/comments orchestration
+- `api/services/crawl_service.py`: crawl task orchestration + crawl settings persistence
+- `api/services/file_service.py`: file collect/download/status/list/cleanup orchestration
+- `api/services/topic_service.py`: topics/tags/group-topics read-write and cleanup orchestration
 
 ## Top-Level Entry Files
 
