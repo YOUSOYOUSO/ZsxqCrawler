@@ -23,6 +23,7 @@
 | `/api/groups/{group_id}/tags*` | `api/routers/topics.py` | 标签及标签话题读取 |
 | `/api/groups/{group_id}/stats` | `api/routers/topics.py` | 群组话题统计 |
 | `/api/groups/{group_id}/database-info` | `api/routers/topics.py` | 群组数据库信息 |
+| `/api/proxy-image` 等媒体接口 | `api/routers/media.py` | 图片代理/缓存/本地媒体读取 |
 
 已完成从 `app/main.py` 下沉到 `api/services/global_task_service.py` 的接口：
 
@@ -73,6 +74,12 @@
 - `/api/groups/{group_id}/stats`
 - `/api/groups/{group_id}/database-info`
 - `/api/groups/{group_id}/topics`
+- `/api/proxy-image`
+- `/api/cache/images/info/{group_id}`
+- `/api/cache/images/{group_id}`
+- `/api/groups/{group_id}/images/{image_path:path}`
+- `/api/groups/{group_id}/videos/{video_path:path}`
+- `/api/proxy/image`
 
 ## Legacy In Main (to be migrated)
 

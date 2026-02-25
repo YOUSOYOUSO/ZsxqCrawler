@@ -18,6 +18,7 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/crawl_service.py`: crawl task orchestration + crawl settings persistence
 - `api/services/file_service.py`: file collect/download/status/list/cleanup orchestration
 - `api/services/topic_service.py`: topics/tags/group-topics read-write and cleanup orchestration
+- `api/services/media_service.py`: image proxy/cache and local image/video serving
 
 ## Top-Level Entry Files
 

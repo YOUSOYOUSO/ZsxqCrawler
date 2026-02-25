@@ -14,9 +14,8 @@ import requests
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse
 import uvicorn
-import mimetypes
 import random
 import time
 from pathlib import Path
@@ -32,7 +31,6 @@ from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler, load_c
 from modules.zsxq.zsxq_database import ZSXQDatabase
 from modules.zsxq.zsxq_file_database import ZSXQFileDatabase
 from modules.shared.db_path_manager import get_db_path_manager
-from app.runtime.image_cache_manager import get_image_cache_manager
 # 使用SQL账号管理器
 from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
 from modules.accounts.account_info_db import get_account_info_db
@@ -1392,147 +1390,7 @@ async def get_groups():
 
 # migrated to api/routers/topics.py: topic detail/refresh/comments/delete/fetch-single/tags endpoints removed
 
-@app.get("/api/proxy-image")
-async def proxy_image(url: str, group_id: str = None):
-    """代理图片请求，支持本地缓存"""
-    try:
-        cache_manager = get_image_cache_manager(group_id)
-
-        # 检查是否已缓存
-        if cache_manager.is_cached(url):
-            cached_path = cache_manager.get_cached_path(url)
-            if cached_path and cached_path.exists():
-                # 返回缓存的图片
-                content_type = mimetypes.guess_type(str(cached_path))[0] or 'image/jpeg'
-
-                with open(cached_path, 'rb') as f:
-                    content = f.read()
-
-                return Response(
-                    content=content,
-                    media_type=content_type,
-                    headers={
-                        'Cache-Control': 'public, max-age=86400',  # 缓存24小时
-                        'Access-Control-Allow-Origin': '*',
-                        'X-Cache-Status': 'HIT'
-                    }
-                )
-
-        # 下载并缓存图片
-        success, cached_path, error = cache_manager.download_and_cache(url)
-
-        if success and cached_path and cached_path.exists():
-            content_type = mimetypes.guess_type(str(cached_path))[0] or 'image/jpeg'
-
-            with open(cached_path, 'rb') as f:
-                content = f.read()
-
-            return Response(
-                content=content,
-                media_type=content_type,
-                headers={
-                    'Cache-Control': 'public, max-age=86400',
-                    'Access-Control-Allow-Origin': '*',
-                    'X-Cache-Status': 'MISS'
-                }
-            )
-        else:
-            raise HTTPException(status_code=404, detail=f"图片加载失败: {error}")
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"代理图片失败: {str(e)}")
-
-
-@app.get("/api/cache/images/info/{group_id}")
-async def get_image_cache_info(group_id: str):
-    """获取指定群组的图片缓存统计信息"""
-    try:
-        cache_manager = get_image_cache_manager(group_id)
-        return cache_manager.get_cache_info()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取缓存信息失败: {str(e)}")
-
-
-@app.delete("/api/cache/images/{group_id}")
-async def clear_image_cache(group_id: str):
-    """清空指定群组的图片缓存"""
-    try:
-        cache_manager = get_image_cache_manager(group_id)
-        success, message = cache_manager.clear_cache()
-
-        if success:
-            return {"success": True, "message": message}
-        else:
-            raise HTTPException(status_code=500, detail=message)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"清空缓存失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/images/{image_path:path}")
-async def get_local_image(group_id: str, image_path: str):
-    """获取群组本地缓存的图片"""
-    from pathlib import Path
-    
-    try:
-        path_manager = get_db_path_manager()
-        group_dir = path_manager.get_group_data_dir(group_id)
-        images_dir = Path(group_dir) / "images"
-        
-        # 安全检查：确保路径在图片目录内
-        image_file = (images_dir / image_path).resolve()
-        if not str(image_file).startswith(str(images_dir.resolve())):
-            raise HTTPException(status_code=403, detail="禁止访问该路径")
-        
-        if not image_file.exists():
-            raise HTTPException(status_code=404, detail="图片不存在")
-        
-        # 获取 MIME 类型
-        content_type = mimetypes.guess_type(str(image_file))[0] or 'application/octet-stream'
-        
-        # 读取并返回图片
-        with open(image_file, 'rb') as f:
-            content = f.read()
-        
-        return Response(content=content, media_type=content_type)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取图片失败: {str(e)}")
-
-
-@app.get("/api/groups/{group_id}/videos/{video_path:path}")
-async def get_local_video(group_id: str, video_path: str):
-    """获取群组本地缓存的视频（支持范围请求，用于视频流播放）"""
-    from pathlib import Path
-    from fastapi.responses import FileResponse
-    from fastapi import Request
-    
-    try:
-        path_manager = get_db_path_manager()
-        group_dir = path_manager.get_group_dir(group_id)
-        videos_dir = Path(group_dir) / "column_videos"
-        
-        # 安全检查：确保路径在视频目录内
-        video_file = (videos_dir / video_path).resolve()
-        if not str(video_file).startswith(str(videos_dir.resolve())):
-            raise HTTPException(status_code=403, detail="禁止访问该路径")
-        
-        if not video_file.exists():
-            raise HTTPException(status_code=404, detail="视频不存在")
-        
-        # 获取 MIME 类型
-        content_type = mimetypes.guess_type(str(video_file))[0] or 'video/mp4'
-        
-        # 使用 FileResponse 支持范围请求（视频拖动进度条）
-        return FileResponse(
-            path=str(video_file),
-            media_type=content_type,
-            filename=video_file.name
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取视频失败: {str(e)}")
+# migrated to api/routers/media.py: proxy/cache/local media endpoints removed
 
 
 # migrated to api/routers/settings.py: @app.get("/api/settings/crawl")
@@ -1703,33 +1561,7 @@ async def stream_task_logs(task_id: str):
         }
     )
 
-# 图片代理API
-@app.get("/api/proxy/image")
-async def proxy_image(url: str):
-    """图片代理，解决盗链问题"""
-    import requests
-    from fastapi.responses import Response
-
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://wx.zsxq.com/',
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        return Response(
-            content=response.content,
-            media_type=response.headers.get('content-type', 'image/jpeg'),
-            headers={
-                'Cache-Control': 'public, max-age=3600',
-                'Access-Control-Allow-Origin': '*'
-            }
-        )
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"图片加载失败: {str(e)}")
+# migrated to api/routers/media.py: /api/proxy/image endpoint removed
 
 # 设置相关API路由
 @app.get("/api/settings/crawler")

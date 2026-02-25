@@ -12,6 +12,7 @@ from api.routers.scheduler import router as scheduler_router
 from api.routers.market_data import router as market_data_router
 from api.routers.stocks import router as stocks_router
 from api.routers.tasks import router as tasks_router
+from api.routers.media import router as media_router
 
 
 def register_core_routers(app: FastAPI) -> None:
@@ -28,3 +29,4 @@ def register_core_routers(app: FastAPI) -> None:
     app.include_router(columns_router)
     app.include_router(settings_router)
     app.include_router(topics_router)
+    app.include_router(media_router)
