@@ -13,6 +13,8 @@
 | `/api/tasks/*` | `api/routers/tasks.py` | 任务查询/停止/日志/SSE |
 | `/api/global/crawl` 等任务型 global 接口 | `api/routers/global_tasks.py` | 全局任务编排 |
 | `/api/database/stats` | `api/routers/groups.py` | 数据库聚合统计 |
+| `/api/groups/{group_id}/info` | `api/routers/groups.py` | 群组信息（带远端失败本地回退） |
+| `DELETE /api/groups/{group_id}` | `api/routers/groups.py` | 群组本地数据清理 |
 | `/api/global/scan-filter/*` | `api/routers/global_tasks.py` | 全局扫描过滤配置与预览 |
 | `/api/crawl/*` | `api/routers/crawl.py` | 话题抓取任务编排 |
 | `/api/settings/crawl` | `api/routers/settings.py` | 抓取行为设置 |
@@ -93,12 +95,14 @@
 - `/api/accounts/{account_id}/self/refresh`
 - `/api/groups/{group_id}/self`
 - `/api/groups/{group_id}/self/refresh`
+- `/api/groups/{group_id}/info`
+- `/api/groups/{group_id}`
 
 ## Legacy In Main (to be migrated)
 
 以下路径仍在 `app/main.py` 直接定义，按域分批迁移：
 
-- groups domain: `/api/groups*`
+- groups domain: `/api/groups`, `/api/local-groups/refresh`
 - settings domain: `/api/settings/*`
 
 ## Migration Rule

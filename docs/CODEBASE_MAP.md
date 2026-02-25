@@ -22,6 +22,7 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/account_resolution_service.py`: account-group auto detection/cache and cookie resolution
 - `api/services/runtime_settings_service.py`: runtime crawler/downloader settings read-write
 - `api/services/account_service.py`: account CRUD + self-profile sync endpoints orchestration
+- `api/services/group_service.py`: group info fallback and local group data cleanup
 
 ## Top-Level Entry Files
 
