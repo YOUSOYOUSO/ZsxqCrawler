@@ -84,4 +84,3 @@ Shared infrastructure and cross-domain helpers:
 - New internal code should prefer `modules/*` paths.
 - Internal imports should directly use `modules/*` and `api/*` paths.
 - Root compatibility shim files have been removed.
-- Root-level business Python files are disallowed by pre-commit hooks.
