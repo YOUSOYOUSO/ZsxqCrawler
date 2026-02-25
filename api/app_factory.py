@@ -13,6 +13,7 @@ from api.routers.market_data import router as market_data_router
 from api.routers.stocks import router as stocks_router
 from api.routers.tasks import router as tasks_router
 from api.routers.media import router as media_router
+from api.routers.accounts import router as accounts_router
 
 
 def register_core_routers(app: FastAPI) -> None:
@@ -30,3 +31,4 @@ def register_core_routers(app: FastAPI) -> None:
     app.include_router(settings_router)
     app.include_router(topics_router)
     app.include_router(media_router)
+    app.include_router(accounts_router)

@@ -26,6 +26,7 @@
 | `/api/groups/{group_id}/stats` | `api/routers/topics.py` | 群组话题统计 |
 | `/api/groups/{group_id}/database-info` | `api/routers/topics.py` | 群组数据库信息 |
 | `/api/proxy-image` 等媒体接口 | `api/routers/media.py` | 图片代理/缓存/本地媒体读取 |
+| `/api/accounts*` 与 `groups/*account*` | `api/routers/accounts.py` | 账号管理、账号自信息、群组账号绑定 |
 
 已完成从 `app/main.py` 下沉到 `api/services/global_task_service.py` 的接口：
 
@@ -84,12 +85,20 @@
 - `/api/proxy/image`
 - `/api/settings/crawler`
 - `/api/settings/downloader`
+- `/api/accounts`
+- `/api/accounts/{account_id}`
+- `/api/groups/{group_id}/assign-account`
+- `/api/groups/{group_id}/account`
+- `/api/accounts/{account_id}/self`
+- `/api/accounts/{account_id}/self/refresh`
+- `/api/groups/{group_id}/self`
+- `/api/groups/{group_id}/self/refresh`
 
 ## Legacy In Main (to be migrated)
 
 以下路径仍在 `app/main.py` 直接定义，按域分批迁移：
 
-- groups/account domain: `/api/groups*`, `/api/accounts*`
+- groups domain: `/api/groups*`
 - settings domain: `/api/settings/*`
 
 ## Migration Rule

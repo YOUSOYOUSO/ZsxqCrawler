@@ -21,6 +21,7 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/media_service.py`: image proxy/cache and local image/video serving
 - `api/services/account_resolution_service.py`: account-group auto detection/cache and cookie resolution
 - `api/services/runtime_settings_service.py`: runtime crawler/downloader settings read-write
+- `api/services/account_service.py`: account CRUD + self-profile sync endpoints orchestration
 
 ## Top-Level Entry Files
 

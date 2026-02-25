@@ -16,7 +16,6 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
-import random
 import time
 from pathlib import Path
 
@@ -33,21 +32,17 @@ from modules.zsxq.zsxq_file_database import ZSXQFileDatabase
 from modules.shared.db_path_manager import get_db_path_manager
 # 使用SQL账号管理器
 from modules.accounts.accounts_sql_manager import get_accounts_sql_manager
-from modules.accounts.account_info_db import get_account_info_db
 from modules.zsxq.zsxq_columns_database import ZSXQColumnsDatabase
 from modules.shared.logger_config import log_info, log_warning, log_error, log_exception, log_debug, ensure_configured
 from api.app_factory import register_core_routers
 from api.services.account_resolution_service import (
     build_account_group_detection,
-    clear_account_detect_cache,
     fetch_groups_from_api,
     get_account_summary_for_group_auto,
     get_cookie_for_group,
 )
 from api.deps.container import get_task_runtime
 from api.schemas.models import (
-    AccountCreateRequest,
-    AssignGroupAccountRequest,
     ColumnsSettingsRequest,
     ConfigModel,
     CrawlBehaviorSettingsRequest,
@@ -346,41 +341,6 @@ def broadcast_log(task_id: str, log_message: str):
     # 这个函数现在主要用于存储日志，实际的SSE广播在stream端点中实现
     pass
 
-def build_stealth_headers(cookie: str) -> Dict[str, str]:
-    """构造更接近官网的请求头，提升成功率"""
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    ]
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7",
-        "Cache-Control": "no-cache",
-        "Cookie": cookie,
-        "Origin": "https://wx.zsxq.com",
-        "Pragma": "no-cache",
-        "Priority": "u=1, i",
-        "Referer": "https://wx.zsxq.com/",
-        "Sec-Ch-Ua": "\"Google Chrome\";v=\"137\", \"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": "\"Windows\"",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "User-Agent": random.choice(user_agents),
-        "X-Aduid": "a3be07cd6-dd67-3912-0093-862d844e7fe",
-        "X-Request-Id": f"dcc5cb6ab-1bc3-8273-cc26-{random.randint(100000000000, 999999999999)}",
-        "X-Signature": "733fd672ddf6d4e367730d9622cdd1e28a4b6203",
-        "X-Timestamp": str(int(time.time())),
-        "X-Version": "2.77.0",
-    }
-    return headers
-
 def update_task(task_id: str, status: str, message: str, result: Optional[Dict[str, Any]] = None):
     """更新任务状态"""
     task_runtime.update_task(task_id=task_id, status=status, message=message, result=result)
@@ -675,242 +635,7 @@ sync_retry_backoff_seconds = 1.0
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
 
-# 账号管理 API
-@app.get("/api/accounts")
-async def list_accounts():
-    """获取所有账号列表"""
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        accounts = sql_mgr.get_accounts(mask_cookie=True)
-        return {"accounts": accounts}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve account list: {str(e)}")
-
-@app.post("/api/accounts")
-async def create_account(request: AccountCreateRequest):
-    """创建新账号"""
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        acc = sql_mgr.add_account(request.cookie, request.name)
-        safe_acc = sql_mgr.get_account_by_id(acc.get("id"), mask_cookie=True)
-        # 清除账号群组检测缓存，使新账号的群组立即可见
-        clear_account_detect_cache()
-        return {"account": safe_acc}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create account: {str(e)}")
-
-@app.delete("/api/accounts/{account_id}")
-async def remove_account(account_id: str):
-    """删除账号"""
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        ok = sql_mgr.delete_account(account_id)
-        if not ok:
-            raise HTTPException(status_code=404, detail="Account does not exist")
-        # 清除账号群组检测缓存
-        clear_account_detect_cache()
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}")
-
-@app.post("/api/groups/{group_id}/assign-account")
-async def assign_account_to_group(group_id: str, request: AssignGroupAccountRequest):
-    """分配群组到指定账号"""
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        ok, msg = sql_mgr.assign_group_account(group_id, request.account_id)
-        if not ok:
-            raise HTTPException(status_code=400, detail=msg)
-        return {"success": True, "message": msg}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to assign account: {str(e)}")
-
-@app.get("/api/groups/{group_id}/account")
-async def get_group_account(group_id: str):
-    try:
-        summary = get_account_summary_for_group_auto(group_id)
-        return {"account": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取群组账号失败: {str(e)}")
-
-# 账号“自我信息”持久化 (/v3/users/self)
-@app.get("/api/accounts/{account_id}/self")
-async def get_account_self(account_id: str):
-    """获取并返回指定账号的已持久化自我信息；若无则尝试抓取并保存"""
-    try:
-        db = get_account_info_db()
-        info = db.get_self_info(account_id)
-        if info:
-            return {"self": info}
-
-        # 若数据库无记录则抓取
-        sql_mgr = get_accounts_sql_manager()
-        acc = sql_mgr.get_account_by_id(account_id, mask_cookie=False)
-        if not acc:
-            raise HTTPException(status_code=404, detail="Account does not exist")
-
-        cookie = acc.get("cookie", "")
-        if not cookie:
-            raise HTTPException(status_code=400, detail="Account has no configured Cookie")
-
-        headers = build_stealth_headers(cookie)
-        resp = requests.get('https://api.zsxq.com/v3/users/self', headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get('succeeded'):
-            raise HTTPException(status_code=400, detail="API returned failure")
-
-        rd = data.get('resp_data', {}) or {}
-        user = rd.get('user', {}) or {}
-        wechat = (rd.get('accounts', {}) or {}).get('wechat', {}) or {}
-
-        self_info = {
-            "uid": user.get("uid"),
-            "name": user.get("name") or wechat.get("name"),
-            "avatar_url": user.get("avatar_url") or wechat.get("avatar_url"),
-            "location": user.get("location"),
-            "user_sid": user.get("user_sid"),
-            "grade": user.get("grade"),
-        }
-        db.upsert_self_info(account_id, self_info, raw_json=data)
-        return {"self": db.get_self_info(account_id)}
-    except HTTPException:
-        raise
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Network request failed: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve account info: {str(e)}")
-
-@app.post("/api/accounts/{account_id}/self/refresh")
-async def refresh_account_self(account_id: str):
-    """强制抓取 /v3/users/self 并更新持久化"""
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        acc = sql_mgr.get_account_by_id(account_id, mask_cookie=False)
-        if not acc:
-            raise HTTPException(status_code=404, detail="Account does not exist")
-
-        cookie = acc.get("cookie", "")
-        if not cookie:
-            raise HTTPException(status_code=400, detail="Account has no configured Cookie")
-
-        headers = build_stealth_headers(cookie)
-        resp = requests.get('https://api.zsxq.com/v3/users/self', headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get('succeeded'):
-            raise HTTPException(status_code=400, detail="API returned failure")
-
-        rd = data.get('resp_data', {}) or {}
-        user = rd.get('user', {}) or {}
-        wechat = (rd.get('accounts', {}) or {}).get('wechat', {}) or {}
-
-        self_info = {
-            "uid": user.get("uid"),
-            "name": user.get("name") or wechat.get("name"),
-            "avatar_url": user.get("avatar_url") or wechat.get("avatar_url"),
-            "location": user.get("location"),
-            "user_sid": user.get("user_sid"),
-            "grade": user.get("grade"),
-        }
-        db = get_account_info_db()
-        db.upsert_self_info(account_id, self_info, raw_json=data)
-        return {"self": db.get_self_info(account_id)}
-    except HTTPException:
-        raise
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Network request failed: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to refresh account info: {str(e)}")
-
-@app.get("/api/groups/{group_id}/self")
-async def get_group_account_self(group_id: str):
-    """获取群组当前使用账号的自我信息（若无则尝试抓取并保存）"""
-    try:
-        summary = get_account_summary_for_group_auto(group_id)
-        cookie = get_cookie_for_group(group_id)
-        account_id = (summary or {}).get('id', 'default')
-
-        if not cookie:
-            raise HTTPException(status_code=400, detail="未找到可用Cookie，请先配置账号或默认Cookie")
-
-        db = get_account_info_db()
-        info = db.get_self_info(account_id)
-        if info:
-            return {"self": info}
-
-        # 抓取并写入
-        headers = build_stealth_headers(cookie)
-        resp = requests.get('https://api.zsxq.com/v3/users/self', headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get('succeeded'):
-            raise HTTPException(status_code=400, detail="API返回失败")
-
-        rd = data.get('resp_data', {}) or {}
-        user = rd.get('user', {}) or {}
-        wechat = (rd.get('accounts', {}) or {}).get('wechat', {}) or {}
-
-        self_info = {
-            "uid": user.get("uid"),
-            "name": user.get("name") or wechat.get("name"),
-            "avatar_url": user.get("avatar_url") or wechat.get("avatar_url"),
-            "location": user.get("location"),
-            "user_sid": user.get("user_sid"),
-            "grade": user.get("grade"),
-        }
-        db.upsert_self_info(account_id, self_info, raw_json=data)
-        return {"self": db.get_self_info(account_id)}
-    except HTTPException:
-        raise
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"网络请求失败: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取群组账号信息失败: {str(e)}")
-
-@app.post("/api/groups/{group_id}/self/refresh")
-async def refresh_group_account_self(group_id: str):
-    """强制抓取群组当前使用账号的自我信息并持久化"""
-    try:
-        summary = get_account_summary_for_group_auto(group_id)
-        cookie = get_cookie_for_group(group_id)
-        account_id = (summary or {}).get('id', 'default')
-
-        if not cookie:
-            raise HTTPException(status_code=400, detail="未找到可用Cookie，请先配置账号或默认Cookie")
-
-        headers = build_stealth_headers(cookie)
-        resp = requests.get('https://api.zsxq.com/v3/users/self', headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get('succeeded'):
-            raise HTTPException(status_code=400, detail="API返回失败")
-
-        rd = data.get('resp_data', {}) or {}
-        user = rd.get('user', {}) or {}
-        wechat = (rd.get('accounts', {}) or {}).get('wechat', {}) or {}
-
-        self_info = {
-            "uid": user.get("uid"),
-            "name": user.get("name") or wechat.get("name"),
-            "avatar_url": user.get("avatar_url") or wechat.get("avatar_url"),
-            "location": user.get("location"),
-            "user_sid": user.get("user_sid"),
-            "grade": user.get("grade"),
-        }
-        db = get_account_info_db()
-        db.upsert_self_info(account_id, self_info, raw_json=data)
-        return {"self": db.get_self_info(account_id)}
-    except HTTPException:
-        raise
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"网络请求失败: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"刷新群组账号信息失败: {str(e)}")
+# migrated to api/routers/accounts.py: account + account-self endpoints removed
 
 # migrated to api/routers/groups.py: @app.get("/api/database/stats")
 async def get_database_stats():
