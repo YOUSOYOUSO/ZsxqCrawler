@@ -16,6 +16,8 @@
 | `/api/global/scan-filter/*` | `api/routers/global_tasks.py` | 全局扫描过滤配置与预览 |
 | `/api/crawl/*` | `api/routers/crawl.py` | 话题抓取任务编排 |
 | `/api/settings/crawl` | `api/routers/settings.py` | 抓取行为设置 |
+| `/api/settings/crawler` | `api/routers/settings.py` | 运行时爬虫参数设置 |
+| `/api/settings/downloader` | `api/routers/settings.py` | 运行时下载器参数设置 |
 | `/api/files/*` | `api/routers/files.py` | 文件收集/下载/状态/清理 |
 | `/api/groups/{group_id}/columns*` | `api/routers/columns.py` | 专栏读取/统计/清理/评论 |
 | `/api/topics*` | `api/routers/topics.py` | 话题读取/刷新/删除/单话题补采 |
@@ -80,6 +82,8 @@
 - `/api/groups/{group_id}/images/{image_path:path}`
 - `/api/groups/{group_id}/videos/{video_path:path}`
 - `/api/proxy/image`
+- `/api/settings/crawler`
+- `/api/settings/downloader`
 
 ## Legacy In Main (to be migrated)
 

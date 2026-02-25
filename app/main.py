@@ -54,8 +54,6 @@ from api.schemas.models import (
     CrawlHistoricalRequest,
     CrawlSettingsRequest,
     CrawlTimeRangeRequest,
-    CrawlerSettingsRequest,
-    DownloaderSettingsRequest,
     FileDownloadRequest,
     GlobalCrawlRequest,
     GlobalFileCollectRequest,
@@ -291,13 +289,6 @@ def get_crawler_for_group(group_id: str, log_callback=None) -> ZSXQInteractiveCr
     db_path = path_manager.get_topics_db_path(group_id)
 
     return ZSXQInteractiveCrawler(cookie, group_id, db_path, log_callback)
-
-def get_crawler_safe() -> Optional[ZSXQInteractiveCrawler]:
-    """安全获取爬虫实例，配置未设置时返回None"""
-    try:
-        return get_crawler()
-    except HTTPException:
-        return None
 
 def get_primary_cookie() -> Optional[str]:
     """
@@ -1570,124 +1561,7 @@ async def stream_task_logs(task_id: str):
 
 # migrated to api/routers/media.py: /api/proxy/image endpoint removed
 
-# 设置相关API路由
-@app.get("/api/settings/crawler")
-async def get_crawler_settings():
-    """获取爬虫设置"""
-    try:
-        crawler = get_crawler_safe()
-        if not crawler:
-            return {
-                "min_delay": 2.0,
-                "max_delay": 5.0,
-                "long_delay_interval": 15,
-                "timestamp_offset_ms": 1,
-                "debug_mode": False
-            }
-
-        return {
-            "min_delay": crawler.min_delay,
-            "max_delay": crawler.max_delay,
-            "long_delay_interval": crawler.long_delay_interval,
-            "timestamp_offset_ms": crawler.timestamp_offset_ms,
-            "debug_mode": crawler.debug_mode
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取爬虫设置失败: {str(e)}")
-
-@app.post("/api/settings/crawler")
-async def update_crawler_settings(request: CrawlerSettingsRequest):
-    """更新爬虫设置"""
-    try:
-        crawler = get_crawler_safe()
-        if not crawler:
-            raise HTTPException(status_code=404, detail="爬虫未初始化")
-
-        # 验证设置
-        if request.min_delay >= request.max_delay:
-            raise HTTPException(status_code=400, detail="最小延迟必须小于最大延迟")
-
-        # 更新设置
-        crawler.min_delay = request.min_delay
-        crawler.max_delay = request.max_delay
-        crawler.long_delay_interval = request.long_delay_interval
-        crawler.timestamp_offset_ms = request.timestamp_offset_ms
-        crawler.debug_mode = request.debug_mode
-
-        return {
-            "message": "爬虫设置已更新",
-            "settings": {
-                "min_delay": crawler.min_delay,
-                "max_delay": crawler.max_delay,
-                "long_delay_interval": crawler.long_delay_interval,
-                "timestamp_offset_ms": crawler.timestamp_offset_ms,
-                "debug_mode": crawler.debug_mode
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新爬虫设置失败: {str(e)}")
-
-@app.get("/api/settings/downloader")
-async def get_downloader_settings():
-    """获取文件下载器设置"""
-    try:
-        crawler = get_crawler_safe()
-        if not crawler:
-            return {
-                "download_interval_min": 30,
-                "download_interval_max": 60,
-                "long_delay_interval": 10,
-                "long_delay_min": 300,
-                "long_delay_max": 600
-            }
-
-        downloader = crawler.get_file_downloader()
-        return {
-            "download_interval_min": downloader.download_interval_min,
-            "download_interval_max": downloader.download_interval_max,
-            "long_delay_interval": downloader.long_delay_interval,
-            "long_delay_min": downloader.long_delay_min,
-            "long_delay_max": downloader.long_delay_max
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取下载器设置失败: {str(e)}")
-
-@app.post("/api/settings/downloader")
-async def update_downloader_settings(request: DownloaderSettingsRequest):
-    """更新文件下载器设置"""
-    try:
-        crawler = get_crawler_safe()
-        if not crawler:
-            raise HTTPException(status_code=404, detail="爬虫未初始化")
-
-        # 验证设置
-        if request.download_interval_min >= request.download_interval_max:
-            raise HTTPException(status_code=400, detail="最小下载间隔必须小于最大下载间隔")
-
-        if request.long_delay_min >= request.long_delay_max:
-            raise HTTPException(status_code=400, detail="最小长休眠时间必须小于最大长休眠时间")
-
-        downloader = crawler.get_file_downloader()
-
-        # 更新设置
-        downloader.download_interval_min = request.download_interval_min
-        downloader.download_interval_max = request.download_interval_max
-        downloader.long_delay_interval = request.long_delay_interval
-        downloader.long_delay_min = request.long_delay_min
-        downloader.long_delay_max = request.long_delay_max
-
-        return {
-            "message": "下载器设置已更新",
-            "settings": {
-                "download_interval_min": downloader.download_interval_min,
-                "download_interval_max": downloader.download_interval_max,
-                "long_delay_interval": downloader.long_delay_interval,
-                "long_delay_min": downloader.long_delay_min,
-                "long_delay_max": downloader.long_delay_max
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新下载器设置失败: {str(e)}")
+# migrated to api/routers/settings.py: crawler/downloader settings endpoints removed
 
 # account auto-resolution helpers migrated to api/services/account_resolution_service.py
 
