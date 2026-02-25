@@ -23,7 +23,6 @@ from pathlib import Path
 project_root = str(Path(__file__).resolve().parents[1])
 if project_root not in sys.path:
     sys.path.append(project_root)
-from modules.shared.paths import get_config_path
 
 # 导入现有的业务逻辑模块
 from modules.zsxq.zsxq_interactive_crawler import ZSXQInteractiveCrawler, load_config
@@ -41,7 +40,6 @@ from api.services.account_resolution_service import (
 from api.deps.container import get_task_runtime
 from api.schemas.models import (
     ColumnsSettingsRequest,
-    ConfigModel,
     CrawlBehaviorSettingsRequest,
     CrawlHistoricalRequest,
     CrawlSettingsRequest,
@@ -538,89 +536,7 @@ def _resolve_crawl_interval_values(request_obj: Optional[Any]) -> Dict[str, Any]
         "pages_per_batch": getattr(request_obj, "pagesPerBatch", None) or persisted["pages_per_batch"],
     }
 
-# API路由定义
-@app.get("/")
-async def root():
-    """根路径"""
-    return {"message": "知识星球数据采集器 API 服务", "version": "1.0.0"}
-
-@app.get("/api/health")
-async def health_check():
-    """健康检查"""
-    return {"status": "healthy", "timestamp": datetime.now()}
-
-@app.get("/api/meta/features")
-async def get_meta_features():
-    """前端能力探测，避免版本不一致导致的404/字段缺失。"""
-    return {
-        "global_sector_topics": True,
-        "scheduler_v2_status": True,
-        "scheduler_next_runs": True,
-        "global_scan_filter": True,
-        "market_data_persistence": True,
-    }
-
-@app.get("/api/config")
-async def get_config():
-    """获取当前配置"""
-    try:
-        config = load_config()
-        auth_config = (config or {}).get('auth', {}) if config else {}
-        cookie = auth_config.get('cookie', '') if auth_config else ''
-
-        configured = is_configured()
-
-        # 隐藏敏感信息，仅返回配置状态和下载相关配置
-        return {
-            "configured": configured,
-            "auth": {
-                "cookie": "***" if cookie and cookie != "your_cookie_here" else "未配置",
-            },
-            "database": config.get('database', {}) if config else {},
-            "download": config.get('download', {}) if config else {}
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取配置失败: {str(e)}")
-
-@app.post("/api/config")
-async def update_config(config: ConfigModel):
-    """更新配置"""
-    try:
-        # 创建配置内容
-        config_content = f"""# 知识星球数据采集器配置文件
-# 通过Web界面自动生成
-
-[auth]
-# 知识星球登录Cookie
-cookie = "{config.cookie}"
-
-[download]
-# 下载目录
-dir = "downloads"
-
-[market_data]
-enabled = true
-db_path = "output/databases/akshare_market.db"
-adjust = "qfq"
-close_finalize_time = "15:05"
-bootstrap_mode = "full_history"
-bootstrap_batch_size = 200
-sync_retry_max = 3
-sync_retry_backoff_seconds = 1.0
-"""
-
-        # 保存配置文件
-        config_path = str(get_config_path("app.toml"))
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(config_content)
-
-        # 重置爬虫实例，强制重新加载配置
-        global crawler_instance
-        crawler_instance = None
-
-        return {"message": "配置更新成功", "success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
+# migrated to api/routers/core.py: root/health/meta/config endpoints removed
 
 # migrated to api/routers/accounts.py: account + account-self endpoints removed
 

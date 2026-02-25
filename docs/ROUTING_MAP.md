@@ -6,6 +6,7 @@
 
 | Path Prefix / Route | Router File | Notes |
 |---|---|---|
+| `/` `/api/health` `/api/meta/features` `/api/config` | `api/routers/core.py` | 入口、健康检查、能力探测、基础配置 |
 | `/api/scheduler/*` | `api/routers/scheduler.py` | 调度器接口 |
 | `/api/groups/{group_id}/stock/*` | `api/routers/stocks.py` | 股票分析接口 |
 | `/api/ai/config` | `api/routers/stocks.py` | AI 配置接口 |
@@ -101,13 +102,14 @@
 - `/api/groups`
 - `/api/groups/{group_id}/info`
 - `/api/groups/{group_id}`
+- `/`
+- `/api/health`
+- `/api/meta/features`
+- `/api/config`
 
 ## Legacy In Main (to be migrated)
 
-以下路径仍在 `app/main.py` 直接定义，按域分批迁移：
-
-- settings domain: `/api/settings/*`
-- app entry/meta domain: `/`, `/api/health`, `/api/meta/features`, `/api/config`
+当前无业务路由留在 `app/main.py`；`main.py` 仅承担应用启动与兼容胶水职责。
 
 ## Migration Rule
 

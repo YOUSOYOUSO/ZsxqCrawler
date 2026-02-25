@@ -14,10 +14,12 @@ from api.routers.stocks import router as stocks_router
 from api.routers.tasks import router as tasks_router
 from api.routers.media import router as media_router
 from api.routers.accounts import router as accounts_router
+from api.routers.core import router as core_router
 
 
 def register_core_routers(app: FastAPI) -> None:
     """Register all core routers while preserving existing API paths."""
+    app.include_router(core_router)
     app.include_router(scheduler_router)
     app.include_router(market_data_router)
     app.include_router(stocks_router)

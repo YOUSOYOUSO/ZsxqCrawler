@@ -23,6 +23,7 @@ This document provides a quick navigation map for humans and AI agents.
 - `api/services/runtime_settings_service.py`: runtime crawler/downloader settings read-write
 - `api/services/account_service.py`: account CRUD + self-profile sync endpoints orchestration
 - `api/services/group_service.py`: group info fallback and local group data cleanup
+- `api/services/config_service.py`: app config read/write and configured-state resolution
 
 ## Top-Level Entry Files
 
