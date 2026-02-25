@@ -37,6 +37,13 @@ from modules.accounts.account_info_db import get_account_info_db
 from modules.zsxq.zsxq_columns_database import ZSXQColumnsDatabase
 from modules.shared.logger_config import log_info, log_warning, log_error, log_exception, log_debug, ensure_configured
 from api.app_factory import register_core_routers
+from api.services.account_resolution_service import (
+    build_account_group_detection,
+    clear_account_detect_cache,
+    fetch_groups_from_api,
+    get_account_summary_for_group_auto,
+    get_cookie_for_group,
+)
 from api.deps.container import get_task_runtime
 from api.schemas.models import (
     AccountCreateRequest,
@@ -1682,113 +1689,7 @@ async def update_downloader_settings(request: DownloaderSettingsRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新下载器设置失败: {str(e)}")
 
-# =========================
-# 自动账号匹配缓存与辅助函数
-# =========================
-ACCOUNT_DETECT_TTL_SECONDS = 300
-_account_detect_cache: Dict[str, Any] = {
-    "built_at": 0,
-    "group_to_account": {},
-    "cookie_by_account": {}
-}
-
-def clear_account_detect_cache():
-    """清除账号群组检测缓存，使新账号/删除账号后群组立即刷新"""
-    _account_detect_cache["built_at"] = 0
-
-def _get_all_account_sources() -> List[Dict[str, Any]]:
-    """获取所有账号来源"""
-    sources: List[Dict[str, Any]] = []
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        accounts = sql_mgr.get_accounts(mask_cookie=False)
-        if accounts:
-            sources.extend(accounts)
-    except Exception:
-        pass
-    return sources
-
-def build_account_group_detection(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """
-    构建自动匹配映射：group_id -> 账号摘要
-    遍历所有账号来源，调用官方 /v2/groups 获取其可访问群组进行比对。
-    使用内存缓存减少频繁请求。
-    """
-    now = time.time()
-    cache = _account_detect_cache
-    if (not force_refresh
-        and cache.get("group_to_account")
-        and now - cache.get("built_at", 0) < ACCOUNT_DETECT_TTL_SECONDS):
-        return cache["group_to_account"]
-
-    group_to_account: Dict[str, Dict[str, Any]] = {}
-    cookie_by_account: Dict[str, str] = {}
-
-    sources = _get_all_account_sources()
-    for src in sources:
-        cookie = src.get("cookie", "")
-        acc_id = src.get("id")
-        if not cookie or cookie == "your_cookie_here" or not acc_id:
-            continue
-
-        # 记录账号对应cookie
-        cookie_by_account[acc_id] = cookie
-
-        try:
-            groups = fetch_groups_from_api(cookie)
-            for g in groups or []:
-                gid = str(g.get("group_id"))
-                if gid and gid not in group_to_account:
-                    group_to_account[gid] = {
-                        "id": acc_id,
-                        "name": src.get("name") or acc_id,
-                        "created_at": src.get("created_at"),
-                        "cookie": "***"
-                    }
-        except Exception:
-            # 忽略单个账号失败
-            continue
-
-    cache["group_to_account"] = group_to_account
-    cache["cookie_by_account"] = cookie_by_account
-    cache["built_at"] = now
-    return group_to_account
-
-def get_cookie_for_group(group_id: str) -> str:
-    """根据自动匹配结果选择用于该群组的Cookie，失败则回退到 config/app.toml"""
-    mapping = build_account_group_detection(force_refresh=False)
-    summary = mapping.get(str(group_id))
-    cookie = None
-    if summary:
-        cookie = _account_detect_cache.get("cookie_by_account", {}).get(summary["id"])
-    if not cookie:
-        cfg = load_config()
-        auth = cfg.get('auth', {}) if cfg else {}
-        cookie = auth.get('cookie', '')
-    return cookie
-
-def get_account_summary_for_group_auto(group_id: str) -> Optional[Dict[str, Any]]:
-    """返回自动匹配到的账号摘要"""
-    mapping = build_account_group_detection(force_refresh=False)
-    summary = mapping.get(str(group_id))
-    if summary:
-        return summary
-
-    # 如果没有匹配的账号，返回第一个账号
-    try:
-        sql_mgr = get_accounts_sql_manager()
-        first_acc = sql_mgr.get_first_account(mask_cookie=True)
-        if first_acc:
-            return {
-                "id": first_acc["id"],
-                "name": first_acc["name"],
-                "created_at": first_acc["created_at"],
-                "cookie": first_acc["cookie"]
-            }
-    except Exception:
-        pass
-
-    return None
+# account auto-resolution helpers migrated to api/services/account_resolution_service.py
 
 # =========================
 # 新增：按时间区间爬取
