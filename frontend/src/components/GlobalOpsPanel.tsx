@@ -44,6 +44,8 @@ interface GlobalOpsPanelProps {
   onScanGlobal: () => void;
   onRefreshHotWords?: () => void;
   hotWordsLoading?: boolean;
+  externalTaskSummary?: TaskSummaryResponse | null;
+  disableTaskSummaryPolling?: boolean;
 }
 
 interface ScanFilterPreviewData {
@@ -131,6 +133,8 @@ export default function GlobalOpsPanel({
   onScanGlobal,
   onRefreshHotWords,
   hotWordsLoading,
+  externalTaskSummary = null,
+  disableTaskSummaryPolling = false,
 }: GlobalOpsPanelProps) {
   const [activeTab, setActiveTab] = useState('crawl');
   const [advancedAnalyzeOpen, setAdvancedAnalyzeOpen] = useState(false);
@@ -305,8 +309,13 @@ export default function GlobalOpsPanel({
   }, [applyTaskSummary]);
 
   useEffect(() => {
+    if (externalTaskSummary) {
+      applyTaskSummary(externalTaskSummary);
+      return;
+    }
+    if (disableTaskSummaryPolling) return;
     void refreshTaskSummary();
-  }, [refreshTaskSummary]);
+  }, [refreshTaskSummary, externalTaskSummary, disableTaskSummaryPolling, applyTaskSummary]);
 
   const hasRunningSummaryTask = useMemo(() => {
     if (!taskSummary) return false;
@@ -317,6 +326,7 @@ export default function GlobalOpsPanel({
   }, [taskSummary]);
 
   useEffect(() => {
+    if (externalTaskSummary || disableTaskSummaryPolling) return;
     let tick = 0;
     const pollMs = hasRunningSummaryTask ? 6000 : 15000;
     const timer = setInterval(() => {
@@ -328,7 +338,7 @@ export default function GlobalOpsPanel({
       void refreshTaskSummary();
     }, pollMs);
     return () => clearInterval(timer);
-  }, [refreshTaskSummary, hasRunningSummaryTask]);
+  }, [refreshTaskSummary, hasRunningSummaryTask, externalTaskSummary, disableTaskSummaryPolling]);
 
   useEffect(() => {
     void loadScanFilterConfig();

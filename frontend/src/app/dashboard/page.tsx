@@ -54,6 +54,7 @@ export default function DashboardPage() {
   const [logTaskId, setLogTaskId] = useState<string | null>(null);
   const [logSourceLabel, setLogSourceLabel] = useState<string>('全局日志总览');
   const [currentTask, setCurrentTask] = useState<Task | null>(null);
+  const [taskSummary, setTaskSummary] = useState<TaskSummaryResponse | null>(null);
 
   // 全局热词云
   const [hotWords, setHotWords] = useState<GlobalHotWordItem[]>([]);
@@ -98,6 +99,15 @@ export default function DashboardPage() {
       });
     } catch (error) {
       console.error('Failed to refresh scheduler status:', error);
+    }
+  }, []);
+
+  const refreshTaskSummary = useCallback(async () => {
+    try {
+      const summary = await apiClient.getTaskSummary();
+      setTaskSummary(summary);
+    } catch (error) {
+      console.error('Failed to refresh task summary:', error);
     }
   }, []);
 
@@ -192,6 +202,32 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [refreshSchedulerStatus]);
 
+  const hasRunningSummaryTask = useMemo(() => {
+    if (!taskSummary) return false;
+    return (
+      Object.keys(taskSummary.running_by_task_type || {}).length > 0 ||
+      Object.keys(taskSummary.running_by_type || {}).length > 0
+    );
+  }, [taskSummary]);
+
+  useEffect(() => {
+    void refreshTaskSummary();
+  }, [refreshTaskSummary]);
+
+  useEffect(() => {
+    let tick = 0;
+    const pollMs = hasRunningSummaryTask ? 6000 : 15000;
+    const timer = setInterval(() => {
+      tick += 1;
+      const hidden = document.visibilityState !== 'visible';
+      if (hidden && tick % 3 !== 0) {
+        return;
+      }
+      void refreshTaskSummary();
+    }, pollMs);
+    return () => clearInterval(timer);
+  }, [refreshTaskSummary, hasRunningSummaryTask]);
+
   useEffect(() => {
     if (!logTaskId) {
       setCurrentTask(null);
@@ -199,9 +235,11 @@ export default function DashboardPage() {
     }
 
     let disposed = false;
+    let terminalReached = false;
     const terminal = new Set(['completed', 'failed', 'cancelled']);
 
     const pollTask = async () => {
+      if (disposed || terminalReached) return;
       try {
         const task = await apiClient.getTask(logTaskId);
         if (disposed) return;
@@ -218,7 +256,9 @@ export default function DashboardPage() {
         });
 
         if (terminal.has(task.status)) {
+          terminalReached = true;
           void refreshSchedulerStatus();
+          void refreshTaskSummary();
         }
       } catch (error) {
         if (!disposed) {
@@ -235,6 +275,9 @@ export default function DashboardPage() {
       if (hidden && tick % 4 !== 0) {
         return;
       }
+      if (terminalReached) {
+        return;
+      }
       void pollTask();
     }, 6000);
 
@@ -242,7 +285,7 @@ export default function DashboardPage() {
       disposed = true;
       clearInterval(timer);
     };
-  }, [logTaskId, refreshSchedulerStatus]);
+  }, [logTaskId, refreshSchedulerStatus, refreshTaskSummary]);
 
   const openLogs = (taskId?: string | null, sourceLabel: string = '系统任务') => {
     if (taskId) {
@@ -292,17 +335,12 @@ export default function DashboardPage() {
     if (logTaskId && currentTask && ['pending', 'running', 'stopping'].includes(currentTask.status)) {
       return;
     }
-    try {
-      const summary = await apiClient.getTaskSummary();
-      const runningTask = pickRunningGlobalTask(summary);
-      if (!runningTask?.task_id) return;
-      setLogTaskId(runningTask.task_id);
-      setLogSourceLabel(taskSourceLabel(runningTask.type));
-      setCurrentTask(runningTask);
-    } catch (error) {
-      console.warn('Failed to recover running task for logs:', error);
-    }
-  }, [currentTask, logTaskId, pickRunningGlobalTask, taskSourceLabel]);
+    const runningTask = pickRunningGlobalTask(taskSummary);
+    if (!runningTask?.task_id) return;
+    setLogTaskId(runningTask.task_id);
+    setLogSourceLabel(taskSourceLabel(runningTask.type));
+    setCurrentTask(runningTask);
+  }, [currentTask, logTaskId, pickRunningGlobalTask, taskSourceLabel, taskSummary]);
 
   useEffect(() => {
     void recoverLogTaskIfNeeded();
@@ -527,6 +565,8 @@ export default function DashboardPage() {
                   onScanGlobal={handleScanGlobal}
                   onRefreshHotWords={() => refreshHotWords(true)}
                   hotWordsLoading={hotWordsLoading}
+                  externalTaskSummary={taskSummary}
+                  disableTaskSummaryPolling={true}
                 />
               </div>
             </SheetContent>
@@ -689,6 +729,8 @@ export default function DashboardPage() {
                 onScanGlobal={handleScanGlobal}
                 onRefreshHotWords={() => refreshHotWords(true)}
                 hotWordsLoading={hotWordsLoading}
+                externalTaskSummary={taskSummary}
+                disableTaskSummaryPolling={true}
               />
             </ScrollArea>
           </div>
