@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import Image from 'next/image';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -279,7 +280,9 @@ export default function ColumnsPage() {
   };
 
   useEffect(() => {
-    loadColumns();
+    void loadColumns();
+    // 这里按群组切换触发加载，避免在每次渲染时重复执行。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
   // 渲染导航栏内的紧凑统计信息
@@ -415,9 +418,12 @@ export default function ColumnsPage() {
           <div className="flex items-center gap-4 mb-6 pb-4 border-b border-gray-200">
             {selectedTopic.owner && (
               <div className="flex items-center gap-2">
-                <img
+                <Image
                   src={apiClient.getProxyImageUrl(selectedTopic.owner.avatar_url || '', groupId)}
                   alt={selectedTopic.owner.name}
+                  width={32}
+                  height={32}
+                  unoptimized
                   className="w-8 h-8 rounded-full object-cover"
                   onError={(e) => {
                     e.currentTarget.src = '/default-avatar.png';
@@ -525,13 +531,15 @@ export default function ColumnsPage() {
                     href={apiClient.getProxyImageUrl(image.original?.url || '', groupId)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block aspect-video rounded-lg overflow-hidden bg-gray-100 hover:opacity-80 transition-opacity"
+                    className="relative block aspect-video rounded-lg overflow-hidden bg-gray-100 hover:opacity-80 transition-opacity"
                   >
-                    <img
+                    <Image
                       src={apiClient.getProxyImageUrl(image.large?.url || image.thumbnail?.url || '', groupId)}
                       alt=""
+                      fill
+                      unoptimized
+                      sizes="(max-width: 768px) 50vw, 33vw"
                       className="w-full h-full object-cover"
-                      loading="lazy"
                     />
                   </a>
                 ))}
@@ -615,12 +623,15 @@ export default function ColumnsPage() {
                         // 未下载：显示封面和状态
                         <>
                           {video.cover?.url && (
-                            <img
+                            <Image
                               src={video.cover.local_path 
                                 ? apiClient.getLocalImageUrl(groupId, video.cover.local_path)
                                 : apiClient.getProxyImageUrl(video.cover.url, groupId)
                               }
                               alt="视频封面"
+                              fill
+                              unoptimized
+                              sizes="(max-width: 1024px) 100vw, 50vw"
                               className="w-full h-full object-contain"
                             />
                           )}
@@ -711,11 +722,12 @@ export default function ColumnsPage() {
                   <div key={comment.comment_id} className="bg-gray-50 rounded-lg p-2">
                     <div className="flex items-center gap-2 mb-1">
                       {comment.owner && (
-                        <img
+                        <Image
                           src={apiClient.getProxyImageUrl(comment.owner.avatar_url || '', groupId)}
                           alt={comment.owner.name}
-                          loading="lazy"
-                          decoding="async"
+                          width={16}
+                          height={16}
+                          unoptimized
                           className="w-4 h-4 rounded-full object-cover block"
                           onError={(e) => {
                             (e.currentTarget as HTMLImageElement).style.display = 'none';
@@ -762,11 +774,12 @@ export default function ColumnsPage() {
                           <div key={reply.comment_id} className="bg-white rounded p-2">
                             <div className="flex items-center gap-2 mb-1">
                               {reply.owner && (
-                                <img
+                                <Image
                                   src={apiClient.getProxyImageUrl(reply.owner.avatar_url || '', groupId)}
                                   alt={reply.owner.name}
-                                  loading="lazy"
-                                  decoding="async"
+                                  width={12}
+                                  height={12}
+                                  unoptimized
                                   className="w-3 h-3 rounded-full object-cover block"
                                   onError={(e) => {
                                     (e.currentTarget as HTMLImageElement).style.display = 'none';

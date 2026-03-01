@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import React from 'react';
+import Image from 'next/image';
 import { useParams, useRouter } from 'next/navigation';
 import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
@@ -176,10 +177,14 @@ export default function GroupDetailPage() {
     loadAccounts();
     loadGroupAccountSelf();
     loadColumnsSummary();
+    // 首次进入和切换群组时统一初始化；其余函数依赖刻意不加入，避免重复初始化请求。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
   useEffect(() => {
     loadTopics();
+    // 翻页/搜索/标签变化时刷新话题，保持触发条件可控。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, searchTerm, selectedTag]);
 
   useEffect(() => {
@@ -250,7 +255,7 @@ export default function GroupDetailPage() {
 
       inFlightRef.current.set(key, p);
     });
-  }, [topics, groupId]);
+  }, [topics, groupId, topicDetails]);
 
 
 
@@ -1198,11 +1203,12 @@ export default function GroupDetailPage() {
                   // 问答类型显示回答者信息
                   topicDetail?.answer?.owner && (
                     <>
-                      <img
+                      <Image
                         src={apiClient.getProxyImageUrl(topicDetail.answer.owner.avatar_url, groupId.toString())}
                         alt={topicDetail.answer.owner.name}
-                        loading="lazy"
-                        decoding="async"
+                        width={32}
+                        height={32}
+                        unoptimized
                         className="w-8 h-8 rounded-full object-cover block"
                         onError={(e) => {
                           e.currentTarget.src = '/default-avatar.png';
@@ -1230,11 +1236,12 @@ export default function GroupDetailPage() {
                   // 其他类型显示原作者信息
                   topic.author && (
                     <>
-                      <img
+                      <Image
                         src={apiClient.getProxyImageUrl(topic.author.avatar_url, groupId.toString())}
                         alt={topic.author.name}
-                        loading="lazy"
-                        decoding="async"
+                        width={32}
+                        height={32}
+                        unoptimized
                         className="w-8 h-8 rounded-full object-cover block"
                         onError={(e) => {
                           e.currentTarget.src = '/default-avatar.png';
@@ -1643,11 +1650,12 @@ export default function GroupDetailPage() {
                     {commentsToShow.map((comment: any) => (
                       <div key={comment.comment_id} className="bg-gray-50 rounded-lg p-2">
                         <div className="flex items-center gap-2 mb-1">
-                          <img
+                          <Image
                             src={apiClient.getProxyImageUrl(comment.owner.avatar_url, groupId.toString())}
                             alt={comment.owner.name}
-                            loading="lazy"
-                            decoding="async"
+                            width={16}
+                            height={16}
+                            unoptimized
                             className="w-4 h-4 rounded-full object-cover block"
                             onError={(e) => {
                               e.currentTarget.src = '/default-avatar.png';
@@ -1693,11 +1701,12 @@ export default function GroupDetailPage() {
                               <div key={reply.comment_id} className="bg-white rounded p-2">
                                 <div className="flex items-center gap-2 mb-1">
                                   {reply.owner && (
-                                    <img
+                                    <Image
                                       src={apiClient.getProxyImageUrl(reply.owner.avatar_url || '', groupId.toString())}
                                       alt={reply.owner.name}
-                                      loading="lazy"
-                                      decoding="async"
+                                      width={12}
+                                      height={12}
+                                      unoptimized
                                       className="w-3 h-3 rounded-full object-cover block"
                                       onError={(e) => {
                                         (e.currentTarget as HTMLImageElement).style.display = 'none';
@@ -2035,9 +2044,12 @@ export default function GroupDetailPage() {
                   <div className="text-sm text-gray-700 mb-3">
                     <div className="flex items-center gap-2">
                       {accountSelf?.avatar_url ? (
-                        <img
+                        <Image
                           src={apiClient.getProxyImageUrl(accountSelf.avatar_url, groupId.toString())}
                           alt={accountSelf?.name || ''}
+                          width={20}
+                          height={20}
+                          unoptimized
                           className="w-5 h-5 rounded-full"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
                         />

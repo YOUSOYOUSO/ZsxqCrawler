@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import Image from 'next/image';
 import ImageGallery from '@/components/ImageGallery';
 import Link from 'next/link';
 import { apiClient } from '@/lib/api';
@@ -74,7 +75,7 @@ export default function GlobalTopicList({ searchTerm, onStatsUpdate, onMentionCl
     } finally {
       setLoading(false);
     }
-  }, [page, normalizedSearch]);
+  }, [page, normalizedSearch, onStatsUpdate]);
 
   useEffect(() => {
     void loadTopics();
@@ -265,10 +266,12 @@ export default function GlobalTopicList({ searchTerm, onStatsUpdate, onMentionCl
                         <div key={comment.comment_id} className="bg-muted/30 rounded-md p-2">
                           <div className="flex items-center gap-2 mb-1">
                             {comment.owner?.avatar_url ? (
-                              <img
+                              <Image
                                 src={apiClient.getProxyImageUrl(comment.owner.avatar_url, topic.group_id.toString())}
                                 alt={comment.owner.name}
-                                loading="lazy"
+                                width={16}
+                                height={16}
+                                unoptimized
                                 className="w-4 h-4 rounded-full object-cover block"
                                 onError={(e) => { e.currentTarget.src = '/default-avatar.png'; }}
                               />
@@ -307,10 +310,12 @@ export default function GlobalTopicList({ searchTerm, onStatsUpdate, onMentionCl
                                 <div key={reply.comment_id} className="bg-background rounded p-2">
                                   <div className="flex items-center gap-2 mb-1">
                                     {reply.owner?.avatar_url && (
-                                      <img
+                                      <Image
                                         src={apiClient.getProxyImageUrl(reply.owner.avatar_url, topic.group_id.toString())}
                                         alt={reply.owner.name}
-                                        loading="lazy"
+                                        width={12}
+                                        height={12}
+                                        unoptimized
                                         className="w-3 h-3 rounded-full object-cover block"
                                         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
                                       />

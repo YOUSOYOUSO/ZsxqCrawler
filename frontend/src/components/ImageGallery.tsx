@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 import Lightbox from 'yet-another-react-lightbox';
 import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Fullscreen from 'yet-another-react-lightbox/plugins/fullscreen';
@@ -23,6 +24,7 @@ interface ImageGalleryProps {
 const ImageGallery: React.FC<ImageGalleryProps> = ({ images, className = '', size = 'medium', groupId }) => {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const [fallbackStepById, setFallbackStepById] = useState<Record<string, number>>({});
 
   // 如果没有图片，不渲染组件
   if (!images || images.length === 0) {
@@ -41,12 +43,11 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ images, className = '', siz
     setLightboxOpen(true);
   };
 
-  // 获取缩略图URL，优先使用thumbnail，然后large，最后original
-  const getThumbnailUrl = (image: ImageData) => {
-    return apiClient.getProxyImageUrl(
-      image.thumbnail?.url || image.large?.url || image.original?.url || '',
-      groupId
-    );
+  // 获取缩略图候选URL，按 thumbnail -> large -> original 顺序回退
+  const getThumbnailCandidates = (image: ImageData) => {
+    return [image.thumbnail?.url, image.large?.url, image.original?.url]
+      .filter((u): u is string => Boolean(u))
+      .map((u) => apiClient.getProxyImageUrl(u, groupId));
   };
 
 
@@ -68,37 +69,42 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ images, className = '', siz
     <div className={`space-y-2 w-full max-w-full overflow-hidden ${className}`}>
       {/* 缩略图网格 */}
       <div className="flex gap-2 overflow-x-auto pb-2 w-full">
-        {images.map((image, index) => (
-          <div key={image.image_id} className={`relative flex-shrink-0 ${getSizeClasses()}`}>
-            <img
-              src={getThumbnailUrl(image)}
-              alt={`话题图片 ${index + 1}`}
-              className={`w-full h-full rounded-lg border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity object-cover`}
-              loading="lazy"
-              decoding="async"
-              onClick={() => handleThumbnailClick(index)}
-              onError={(e) => {
-                // 图片加载失败时的处理
-                const target = e.currentTarget;
-                if (target.src.includes('thumbnail') && image.large?.url) {
-                  target.src = apiClient.getProxyImageUrl(image.large.url, groupId);
-                } else if (target.src.includes('large') && image.original?.url) {
-                  target.src = apiClient.getProxyImageUrl(image.original.url, groupId);
-                } else {
-                  // 所有尺寸都失败时，显示占位符
-                  target.style.display = 'none';
-                }
-              }}
-            />
+        {images.map((image, index) => {
+          const candidates = getThumbnailCandidates(image);
+          const step = fallbackStepById[image.image_id] ?? 0;
+          const imageSrc = candidates[step] || '';
 
-            {/* 多图时显示图片数量标识 */}
-            {images.length > 1 && (
-              <div className="absolute top-1 right-1 bg-black bg-opacity-60 text-white text-xs px-1.5 py-0.5 rounded">
-                {index + 1}/{images.length}
-              </div>
-            )}
-          </div>
-        ))}
+          return (
+            <div key={image.image_id} className={`relative flex-shrink-0 ${getSizeClasses()}`}>
+              {imageSrc ? (
+                <Image
+                  src={imageSrc}
+                  alt={`话题图片 ${index + 1}`}
+                  fill
+                  unoptimized
+                  sizes="160px"
+                  className="rounded-lg border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity object-cover"
+                  onClick={() => handleThumbnailClick(index)}
+                  onError={() => {
+                    setFallbackStepById((prev) => ({
+                      ...prev,
+                      [image.image_id]: step + 1,
+                    }));
+                  }}
+                />
+              ) : (
+                <div className="w-full h-full rounded-lg border border-gray-200 bg-gray-100" />
+              )}
+
+              {/* 多图时显示图片数量标识 */}
+              {images.length > 1 && (
+                <div className="absolute top-1 right-1 bg-black bg-opacity-60 text-white text-xs px-1.5 py-0.5 rounded">
+                  {index + 1}/{images.length}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Lightbox 组件 */}

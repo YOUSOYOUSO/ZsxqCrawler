@@ -256,6 +256,12 @@ async def global_groups_overview(response: Response):
         raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
 
 
+@router.head("/api/global/groups")
+async def global_groups_overview_head():
+    # 供健康探测/缓存探测使用，避免 HEAD 请求触发 405。
+    return Response(status_code=200)
+
+
 @router.get("/api/global/topics")
 async def global_whitelist_topics(response: Response, page: int = 1, per_page: int = 20, search: Optional[str] = None):
     started_at = time.time()

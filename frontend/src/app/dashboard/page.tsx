@@ -187,7 +187,7 @@ export default function DashboardPage() {
         return;
       }
       void refreshSchedulerStatus();
-    }, 5000);
+    }, 12000);
 
     return () => clearInterval(timer);
   }, [refreshSchedulerStatus]);
@@ -205,7 +205,17 @@ export default function DashboardPage() {
       try {
         const task = await apiClient.getTask(logTaskId);
         if (disposed) return;
-        setCurrentTask(task);
+        setCurrentTask(prev => {
+          if (!prev) return task;
+          if (
+            prev.task_id === task.task_id &&
+            prev.status === task.status &&
+            prev.updated_at === task.updated_at
+          ) {
+            return prev;
+          }
+          return task;
+        });
 
         if (terminal.has(task.status)) {
           void refreshSchedulerStatus();
@@ -226,7 +236,7 @@ export default function DashboardPage() {
         return;
       }
       void pollTask();
-    }, 3000);
+    }, 6000);
 
     return () => {
       disposed = true;
@@ -299,9 +309,15 @@ export default function DashboardPage() {
   }, [recoverLogTaskIfNeeded]);
 
   useEffect(() => {
+    let tick = 0;
     const timer = setInterval(() => {
+      tick += 1;
+      const hidden = document.visibilityState !== 'visible';
+      if (hidden && tick % 2 !== 0) {
+        return;
+      }
       void recoverLogTaskIfNeeded();
-    }, 5000);
+    }, 15000);
     return () => clearInterval(timer);
   }, [recoverLogTaskIfNeeded]);
 

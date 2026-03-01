@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { apiClient, Account, AccountSelf } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -153,9 +154,12 @@ export default function AccountPanel() {
                         ) : acc.selfInfo ? (
                           <div className="flex items-center gap-2">
                             {acc.selfInfo.avatar_url && (
-                              <img
+                              <Image
                                 src={apiClient.getProxyImageUrl(acc.selfInfo.avatar_url)}
                                 alt={acc.selfInfo.name || ''}
+                                width={24}
+                                height={24}
+                                unoptimized
                                 className="w-6 h-6 rounded-full"
                                 onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
                               />

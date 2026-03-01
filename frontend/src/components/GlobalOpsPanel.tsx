@@ -308,12 +308,27 @@ export default function GlobalOpsPanel({
     void refreshTaskSummary();
   }, [refreshTaskSummary]);
 
+  const hasRunningSummaryTask = useMemo(() => {
+    if (!taskSummary) return false;
+    return (
+      Object.keys(taskSummary.running_by_task_type || {}).length > 0 ||
+      Object.keys(taskSummary.running_by_type || {}).length > 0
+    );
+  }, [taskSummary]);
+
   useEffect(() => {
+    let tick = 0;
+    const pollMs = hasRunningSummaryTask ? 6000 : 15000;
     const timer = setInterval(() => {
+      tick += 1;
+      const hidden = document.visibilityState !== 'visible';
+      if (hidden && tick % 3 !== 0) {
+        return;
+      }
       void refreshTaskSummary();
-    }, 3000);
+    }, pollMs);
     return () => clearInterval(timer);
-  }, [refreshTaskSummary]);
+  }, [refreshTaskSummary, hasRunningSummaryTask]);
 
   useEffect(() => {
     void loadScanFilterConfig();

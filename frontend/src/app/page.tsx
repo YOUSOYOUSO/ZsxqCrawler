@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -116,9 +117,12 @@ export default function Home() {
               <CardContent className="py-3">
                 <div className="flex items-center gap-4">
                   {selectedGroup.background_url && (
-                    <img
+                    <Image
                       src={selectedGroup.background_url}
                       alt={selectedGroup.name}
+                      width={48}
+                      height={48}
+                      unoptimized
                       className="w-12 h-12 rounded-lg object-cover"
                     />
                   )}

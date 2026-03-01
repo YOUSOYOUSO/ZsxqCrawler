@@ -114,7 +114,8 @@ export default function TaskLogViewer({
         const data = (await res.json()) as TaskStatusResponse;
         if (disposed) return;
         if (typeof data?.status === 'string' && data.status.trim()) {
-          setStatus(data.status);
+          const nextStatus = data.status.trim();
+          setStatus(prev => (prev === nextStatus ? prev : nextStatus));
         }
       } catch (error) {
         console.error('获取任务状态失败:', error);
@@ -124,16 +125,18 @@ export default function TaskLogViewer({
     void loadLogsOnce();
     void loadStatusOnce();
 
+    const fallbackPollMs = isConnected ? 12000 : 5000;
     const timer = window.setInterval(() => {
+      if (terminalRef.current) return;
       void loadLogsOnce();
       void loadStatusOnce();
-    }, 2000);
+    }, fallbackPollMs);
 
     return () => {
       disposed = true;
       clearInterval(timer);
     };
-  }, [taskId, replaceLogs]);
+  }, [taskId, replaceLogs, isConnected]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -164,7 +167,8 @@ export default function TaskLogViewer({
             setShowExpiredDialog(true);
           }
         } else if (data.type === 'status' && data.status) {
-          setStatus(data.status);
+          const nextStatus = data.status;
+          setStatus(prev => (prev === nextStatus ? prev : nextStatus));
           // 不再将状态信息添加到日志中，只更新状态
 
           // 如果任务完成、失败或取消，关闭SSE连接
