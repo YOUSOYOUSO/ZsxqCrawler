@@ -351,5 +351,56 @@ class MarketDataStore:
             "sync_state": state,
         }
 
+    def get_symbol_day_snapshot_info(self, stock_code: str, trade_date: str, adjust: Optional[str] = None) -> Dict[str, Any]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT is_final, fetched_at, open, close
+            FROM market_daily_prices
+            WHERE stock_code = ? AND trade_date = ? AND adjust = ?
+            ORDER BY fetched_at DESC
+            LIMIT 1
+            """,
+            (str(stock_code).upper(), str(trade_date), (adjust or self.adjust).lower()),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return {"exists": False, "is_final": None, "fetched_at": None, "open": None, "close": None}
+        return {
+            "exists": True,
+            "is_final": int(row["is_final"]) if row["is_final"] is not None else None,
+            "fetched_at": row["fetched_at"],
+            "open": row["open"],
+            "close": row["close"],
+        }
+
+    def get_trade_date_coverage(self, trade_date: str, adjust: Optional[str] = None) -> Dict[str, int]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS rows_total,
+                COUNT(DISTINCT stock_code) AS symbols_total,
+                SUM(CASE WHEN is_final = 1 THEN 1 ELSE 0 END) AS rows_final,
+                COUNT(DISTINCT CASE WHEN is_final = 1 THEN stock_code END) AS symbols_final
+            FROM market_daily_prices
+            WHERE trade_date = ? AND adjust = ?
+            """,
+            (str(trade_date), (adjust or self.adjust).lower()),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return {"rows_total": 0, "symbols_total": 0, "rows_final": 0, "symbols_final": 0}
+        return {
+            "rows_total": int(row["rows_total"] or 0),
+            "symbols_total": int(row["symbols_total"] or 0),
+            "rows_final": int(row["rows_final"] or 0),
+            "symbols_final": int(row["symbols_final"] or 0),
+        }
+
     def reset_bootstrap_cursor(self) -> None:
         self.update_sync_state(bootstrap_cursor_symbol=None, bootstrap_status="idle")

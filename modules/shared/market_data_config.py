@@ -26,11 +26,18 @@ DEFAULT_MARKET_DATA_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "db_path": "output/databases/akshare_market.db",
     "adjust": "qfq",
+    "providers": ["tx", "sina", "akshare", "tushare"],
+    "realtime_providers": ["akshare", "tx", "sina", "tushare"],
+    "realtime_provider_failover_enabled": True,
+    "provider_failover_enabled": True,
+    "provider_circuit_breaker_seconds": 300.0,
+    "tushare_token": "",
     "close_finalize_time": "15:05",
     "bootstrap_mode": "full_history",
     "bootstrap_batch_size": 200,
     "sync_retry_max": 3,
     "sync_retry_backoff_seconds": 1.0,
+    "sync_failure_cooldown_seconds": 120.0,
     "incremental_history_days": 20,
 }
 
@@ -59,11 +66,32 @@ def load_market_data_config() -> Dict[str, Any]:
     cfg["enabled"] = bool(cfg.get("enabled", True))
     cfg["db_path"] = _to_abs_path(str(cfg.get("db_path", DEFAULT_MARKET_DATA_CONFIG["db_path"])))
     cfg["adjust"] = str(cfg.get("adjust", "qfq")).lower() or "qfq"
+    raw_providers = cfg.get("providers", ["tx", "sina", "akshare", "tushare"])
+    if isinstance(raw_providers, str):
+        providers = [p.strip().lower() for p in raw_providers.split(",") if p.strip()]
+    elif isinstance(raw_providers, list):
+        providers = [str(p).strip().lower() for p in raw_providers if str(p).strip()]
+    else:
+        providers = ["tx", "sina", "akshare", "tushare"]
+    cfg["providers"] = providers or ["akshare"]
+    raw_realtime_providers = cfg.get("realtime_providers", ["akshare", "tx", "sina", "tushare"])
+    if isinstance(raw_realtime_providers, str):
+        realtime_providers = [p.strip().lower() for p in raw_realtime_providers.split(",") if p.strip()]
+    elif isinstance(raw_realtime_providers, list):
+        realtime_providers = [str(p).strip().lower() for p in raw_realtime_providers if str(p).strip()]
+    else:
+        realtime_providers = ["akshare", "tx", "sina", "tushare"]
+    cfg["realtime_providers"] = realtime_providers or ["akshare", "tx", "sina", "tushare"]
+    cfg["realtime_provider_failover_enabled"] = bool(cfg.get("realtime_provider_failover_enabled", False))
+    cfg["provider_failover_enabled"] = bool(cfg.get("provider_failover_enabled", True))
+    cfg["provider_circuit_breaker_seconds"] = float(cfg.get("provider_circuit_breaker_seconds", 300.0))
+    cfg["tushare_token"] = str(cfg.get("tushare_token", "")).strip()
     cfg["close_finalize_time"] = str(cfg.get("close_finalize_time", "15:05"))
     cfg["bootstrap_mode"] = str(cfg.get("bootstrap_mode", "full_history"))
     cfg["bootstrap_batch_size"] = int(cfg.get("bootstrap_batch_size", 200))
     cfg["sync_retry_max"] = int(cfg.get("sync_retry_max", 3))
     cfg["sync_retry_backoff_seconds"] = float(cfg.get("sync_retry_backoff_seconds", 1.0))
+    cfg["sync_failure_cooldown_seconds"] = float(cfg.get("sync_failure_cooldown_seconds", 120.0))
     cfg["incremental_history_days"] = int(cfg.get("incremental_history_days", 20))
 
     # Optional env overrides
@@ -73,6 +101,36 @@ def load_market_data_config() -> Dict[str, Any]:
         cfg["close_finalize_time"] = os.environ["MARKET_DATA_CLOSE_FINALIZE_TIME"]
     if os.environ.get("MARKET_DATA_ENABLED"):
         cfg["enabled"] = os.environ["MARKET_DATA_ENABLED"].strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("MARKET_DATA_PROVIDERS"):
+        cfg["providers"] = [
+            p.strip().lower()
+            for p in os.environ["MARKET_DATA_PROVIDERS"].split(",")
+            if p.strip()
+        ] or ["akshare"]
+    if os.environ.get("MARKET_DATA_REALTIME_PROVIDERS"):
+        cfg["realtime_providers"] = [
+            p.strip().lower()
+            for p in os.environ["MARKET_DATA_REALTIME_PROVIDERS"].split(",")
+            if p.strip()
+        ] or ["akshare", "tx", "sina", "tushare"]
+    if os.environ.get("MARKET_DATA_REALTIME_PROVIDER_FAILOVER_ENABLED"):
+        cfg["realtime_provider_failover_enabled"] = os.environ["MARKET_DATA_REALTIME_PROVIDER_FAILOVER_ENABLED"].strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if os.environ.get("MARKET_DATA_PROVIDER_FAILOVER_ENABLED"):
+        cfg["provider_failover_enabled"] = os.environ["MARKET_DATA_PROVIDER_FAILOVER_ENABLED"].strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if os.environ.get("MARKET_DATA_PROVIDER_CIRCUIT_BREAKER_SECONDS"):
+        cfg["provider_circuit_breaker_seconds"] = float(os.environ["MARKET_DATA_PROVIDER_CIRCUIT_BREAKER_SECONDS"])
+    if os.environ.get("TUSHARE_TOKEN"):
+        cfg["tushare_token"] = os.environ["TUSHARE_TOKEN"].strip()
 
     return cfg
 

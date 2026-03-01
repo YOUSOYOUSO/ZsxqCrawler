@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -59,13 +60,22 @@ class GlobalTaskService:
         background_tasks.add_task(self._run_global_files_download, task_id, request)
         return {"task_id": task_id, "message": "全区下载任务已启动"}
 
-    def start_global_analyze_performance(self, background_tasks: BackgroundTasks, force: bool = False):
+    def start_global_analyze_performance(
+        self,
+        background_tasks: BackgroundTasks,
+        force: bool = False,
+        calc_window_days: Optional[int] = None,
+    ):
+        _ = background_tasks
         task_id = self._create_running_task(
             prefix="global_analyze_performance",
             task_type="global_analyze_performance",
             message="正在初始化全区收益计算...",
         )
-        background_tasks.add_task(self._run_global_analyze_performance, task_id, force)
+        # NOTE:
+        # 对于高耗时收益计算，使用独立线程启动可确保接口快速返回 task_id，
+        # 避免请求生命周期绑定导致前端“点击无响应”。
+        self._start_detached_task(self._run_global_analyze_performance, task_id, force, calc_window_days)
         return {"task_id": task_id, "message": "全区计算任务已启动"}
 
     def cleanup_excluded_stocks(self, scope: str = "all", group_id: Optional[str] = None):
@@ -190,13 +200,27 @@ class GlobalTaskService:
         background_tasks.add_task(self._run_cleanup_blacklist, task_id)
         return {"task_id": task_id, "message": "黑名单清理任务已启动"}
 
-    def start_scan_global(self, background_tasks: BackgroundTasks, force: bool = False, exclude_non_stock: bool = False):
+    def start_scan_global(
+        self,
+        background_tasks: BackgroundTasks,
+        force: bool = False,
+        exclude_non_stock: bool = False,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ):
         task_id = self._create_running_task(
             prefix="global_scan",
             task_type="global_scan",
             message="正在初始化全局扫描...",
         )
-        background_tasks.add_task(self._run_global_scan, task_id, force, exclude_non_stock)
+        background_tasks.add_task(
+            self._run_global_scan,
+            task_id,
+            force,
+            exclude_non_stock,
+            start_date,
+            end_date,
+        )
         return {"task_id": task_id, "message": "全局扫描任务已启动"}
 
     def _run_cleanup_blacklist(self, task_id: str):
@@ -321,17 +345,27 @@ class GlobalTaskService:
             file_downloader_instances={},
         )
 
-    def _run_global_analyze_performance(self, task_id: str, force: bool):
+    def _run_global_analyze_performance(self, task_id: str, force: bool, calc_window_days: Optional[int] = None):
         _ = force
+        default_window = int(os.environ.get("GLOBAL_ANALYZE_CALC_WINDOW_DAYS", "3") or 3)
+        effective_window = max(1, int(calc_window_days or default_window))
+        self._log(task_id, f"⚙️ 收益计算窗口: 最近 {effective_window} 天（可通过 calc_window_days 覆盖）")
         GlobalAnalyzePerformanceService().run(
             task_id=task_id,
             add_task_log=self._log,
             update_task=self._update,
             is_task_stopped=self._stopped,
-            calc_window_days=365,
+            calc_window_days=effective_window,
         )
 
-    def _run_global_scan(self, task_id: str, force: bool, exclude_non_stock: bool):
+    def _run_global_scan(
+        self,
+        task_id: str,
+        force: bool,
+        exclude_non_stock: bool,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ):
         try:
             self._update(task_id, "running", "准备开始全局扫描...")
             self._log(task_id, "🚀 开始全局股票提及扫描...")
@@ -361,6 +395,79 @@ class GlobalTaskService:
             if not groups:
                 self._log(task_id, "ℹ️ 过滤后无可扫描群组，任务结束")
                 self._update(task_id, "completed", "全局扫描完成: 过滤后无可扫描群组")
+                return
+
+            has_range = bool(start_date and end_date)
+            if has_range:
+                from modules.analyzers.stock_analyzer import StockAnalyzer
+
+                self._log(
+                    task_id,
+                    f"🗓️ 进入全局范围重算模式: {start_date} ~ {end_date}" + ("（强制）" if force else ""),
+                )
+                groups_done = 0
+                total_records = 0
+                total_processed = 0
+                total_skipped = 0
+                total_errors = 0
+                failures: list[dict[str, str]] = []
+
+                for i, group in enumerate(groups, 1):
+                    if self._stopped(task_id):
+                        self._update(task_id, "cancelled", "全局范围重算已停止")
+                        return
+
+                    gid = str(group.get("group_id", "")).strip()
+                    if not gid:
+                        continue
+                    self._log(task_id, f"👉 [{i}/{len(groups)}] 范围重算群组 {gid}")
+                    try:
+                        analyzer = StockAnalyzer(gid, log_callback=lambda msg: self._log(task_id, f"  [{gid}] {msg}"))
+                        res = analyzer.recalculate_performance_range(
+                            start_date=str(start_date),
+                            end_date=str(end_date),
+                            force=force,
+                        )
+                        groups_done += 1
+                        total_records += int(res.get("total", 0) or 0)
+                        total_processed += int(res.get("processed", 0) or 0)
+                        total_skipped += int(res.get("skipped", 0) or 0)
+                        total_errors += int(res.get("errors", 0) or 0)
+                        self._log(
+                            task_id,
+                            f"   ✅ 群组 {gid} 完成: total={res.get('total', 0)}, "
+                            f"processed={res.get('processed', 0)}, skipped={res.get('skipped', 0)}, "
+                            f"errors={res.get('errors', 0)}",
+                        )
+                    except Exception as e:
+                        failures.append({"group_id": gid, "error": str(e)})
+                        self._log(task_id, f"   ❌ 群组 {gid} 重算失败: {e}")
+
+                try:
+                    get_global_analyzer().invalidate_cache()
+                    self._log(task_id, "🔄 全局统计缓存已刷新")
+                except Exception:
+                    pass
+
+                self._update(
+                    task_id,
+                    "completed",
+                    f"全局范围重算完成: {groups_done}/{len(groups)} 个群组, "
+                    f"processed={total_processed}, skipped={total_skipped}, errors={total_errors}",
+                    {
+                        "range_start": start_date,
+                        "range_end": end_date,
+                        "force": force,
+                        "groups_total": len(groups),
+                        "groups_succeeded": groups_done,
+                        "groups_failed": len(failures),
+                        "records_total": total_records,
+                        "processed_total": total_processed,
+                        "skipped_total": total_skipped,
+                        "errors_total": total_errors,
+                        "failures": failures[:50],
+                    },
+                )
                 return
 
             successes, failures = run_serial_incremental_pipeline(
@@ -409,6 +516,11 @@ class GlobalTaskService:
         task_id = self.runtime.next_id(prefix)
         self.runtime.create_task(task_type=task_type, message=message, task_id=task_id, status="running")
         return task_id
+
+    @staticmethod
+    def _start_detached_task(fn, *args):
+        t = threading.Thread(target=fn, args=args, daemon=True)
+        t.start()
 
     def _log(self, task_id: str, message: str):
         self.runtime.append_log(task_id, message)

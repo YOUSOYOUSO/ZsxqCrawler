@@ -45,7 +45,6 @@ export default function GroupDetailPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [crawlLoading, setCrawlLoading] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState<string | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [recentTasks, setRecentTasks] = useState<any[]>([]);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [currentTaskStatus, setCurrentTaskStatus] = useState<string | null>(null);
@@ -731,34 +730,6 @@ export default function GroupDetailPage() {
       toast.error(`文件下载失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setFileLoading(null);
-    }
-  };
-
-  const handleAnalyzeStocks = async (force = false) => {
-    try {
-      setAnalysisLoading(true);
-      // 先切到日志页，立即展示“等待任务”占位，避免用户需要二次点击
-      setActiveTab('logs');
-      setCurrentTaskStatus('pending');
-      setCurrentTaskMessage('正在创建数据分析任务...');
-      if (logsSectionRef.current) {
-        logsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-
-      const response = await apiClient.scanStocks(groupId, force);
-      toast.success(`数据分析任务已创建: ${(response as any).task_id}`);
-      setCurrentTaskId((response as any).task_id);
-      setCurrentTaskStatus('pending');
-      setCurrentTaskMessage('分析任务已创建，等待执行...');
-      // 再次确保日志页可见（处理移动端/长页场景）
-      setActiveTab('logs');
-      if (logsSectionRef.current) {
-        logsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    } catch (error) {
-      toast.error(`数据分析失败: ${error instanceof Error ? error.message : '未知错误'}`);
-    } finally {
-      setAnalysisLoading(false);
     }
   };
 
@@ -2270,7 +2241,7 @@ export default function GroupDetailPage() {
                   <StockDashboard
                     groupId={groupId}
                     onTaskCreated={(taskId) => setCurrentTaskId(taskId)}
-                    hideScanActions={true}
+                    hideScanActions={false}
                     surfaceVariant="group-consistent"
                   />
                 ),
@@ -2866,36 +2837,6 @@ export default function GroupDetailPage() {
                   </TabsContent>
 
                   <TabsContent value="analyze" className="space-y-3 mt-4">
-                    <div className="border rounded-lg p-3 border-emerald-200 bg-emerald-50/40">
-                      <div className="flex items-center gap-2 mb-2">
-                        <BarChart3 className="h-3 w-3 text-emerald-600" />
-                        <span className="text-xs font-medium text-emerald-700">开始数据分析</span>
-                      </div>
-                      <div className="text-xs text-gray-600 space-y-1 mb-3">
-                        <p>提取股票提及并计算后续表现。</p>
-                        <p>任务会进入“任务日志”页签。</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Button
-                          size="sm"
-                          className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
-                          onClick={() => handleAnalyzeStocks(false)}
-                          disabled={analysisLoading}
-                        >
-                          {analysisLoading ? '创建中...' : '开始'}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs"
-                          onClick={() => handleAnalyzeStocks(true)}
-                          disabled={analysisLoading}
-                        >
-                          强制重算
-                        </Button>
-                      </div>
-                    </div>
-
                     <div className="border rounded-lg p-3 border-blue-200">
                       <div className="text-xs text-blue-700 mb-2">分析完成后可在“股票分析”页签查看详细结果。</div>
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setActiveTab('stocks')}>
@@ -2928,7 +2869,7 @@ export default function GroupDetailPage() {
 
 
                 {/* 任务状态显示 */}
-                {(crawlLoading || fileLoading || analysisLoading) && (
+                {(crawlLoading || fileLoading) && (
                   <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-center gap-2 mb-1">
                       <div className="animate-spin rounded-full h-3 w-3 border-2 border-blue-600 border-t-transparent"></div>
@@ -2942,7 +2883,6 @@ export default function GroupDetailPage() {
                       {fileLoading === 'download-time' && '正在按时间顺序下载文件...'}
                       {fileLoading === 'download-count' && '正在按下载次数下载文件...'}
                       {fileLoading === 'clear' && '正在删除文件数据库...'}
-                      {analysisLoading && '正在创建数据分析任务...'}
                     </p>
                   </div>
                 )}

@@ -6,11 +6,20 @@ export interface ApiResponse<T = any> {
   error?: string;
 }
 
+export interface DataMeta {
+  cache_hit?: boolean;
+  data_mode?: 'finalized' | 'live' | string;
+  anchor_date?: string;
+  effective_start_date?: string;
+  effective_end_date?: string;
+}
+
 export interface WinRateResponse {
   data: any[];
   total: number;
   page: number;
   page_size: number;
+  _meta?: DataMeta;
 }
 
 export interface Task {
@@ -206,15 +215,83 @@ export interface StockEvent {
   excess_return_10d?: number | null;
   max_return?: number | null;
   max_drawdown?: number | null;
+  t0_buy_price?: number | null;
+  t0_buy_ts?: string;
+  t0_buy_source?: string;
+  t0_end_price_rt?: number | null;
+  t0_end_price_rt_ts?: string;
+  t0_end_price_close?: number | null;
+  t0_end_price_close_ts?: string;
+  t0_return_rt?: number | null;
+  t0_return_close?: number | null;
+  t0_status?: string;
+  t0_note?: string;
+  t0_session_trade_date?: string;
+  t0_window_tag?: string;
+}
+
+export interface T0BoardRow {
+  mention_id?: number | null;
+  topic_id?: number | string | null;
+  group_id?: number | string | null;
+  group_name?: string;
+  mention_time?: string;
+  ret?: number | null;
+}
+
+export interface T0BoardView {
+  view_key: string;
+  label: string;
+  trade_date: string;
+  window_start: string;
+  window_end: string;
+  status: string;
+  has_data: boolean;
+  current_return?: number | null;
+  max_return?: number | null;
+  max_event?: {
+    mention_id?: number | null;
+    topic_id?: number | string | null;
+    group_id?: number | string | null;
+    group_name?: string | null;
+  } | null;
+  rows: T0BoardRow[];
+}
+
+export interface T0Board {
+  as_of?: string;
+  close_finalize_time?: string;
+  open_time?: string;
+  base_trade_date?: string;
+  next_trade_date?: string;
+  views: T0BoardView[];
 }
 
 export interface StockEventsResponse {
   stock_code: string;
   stock_name?: string;
   total_mentions?: number;
+  page?: number;
+  per_page?: number;
+  detail_mode?: 'fast' | 'full' | string;
+  include_full_text?: boolean;
   win_rate_5d?: number | null;
   avg_return_5d?: number | null;
+  t0_finalized?: boolean;
+  t0_data_mode?: string;
+  snapshot_ts?: string | null;
+  snapshot_is_final?: number | null;
+  refresh_source?: string;
+  refresh_state?: string;
+  refresh_skipped?: boolean;
+  last_refresh_at?: string | null;
+  last_refresh_error?: string | null;
+  next_refresh_allowed_at?: string | null;
+  provider_path?: string[];
+  t0_refresh_cooldown_seconds?: number;
+  t0_board?: T0Board;
   events?: StockEvent[];
+  _meta?: DataMeta;
 }
 
 export interface ColumnInfo {
@@ -385,4 +462,3 @@ export interface ColumnsFetchSettings {
   cacheImages?: boolean;
   incrementalMode?: boolean;
 }
-

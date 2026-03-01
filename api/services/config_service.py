@@ -65,11 +65,18 @@ dir = \"downloads\"
 enabled = true
 db_path = \"output/databases/akshare_market.db\"
 adjust = \"qfq\"
+providers = [\"tx\", \"sina\", \"akshare\", \"tushare\"]
+realtime_providers = [\"tushare\", \"tx\", \"sina\", \"akshare\"]
+realtime_provider_failover_enabled = false
+provider_failover_enabled = true
+provider_circuit_breaker_seconds = 300.0
+tushare_token = \"\"
 close_finalize_time = \"15:05\"
 bootstrap_mode = \"full_history\"
 bootstrap_batch_size = 200
 sync_retry_max = 3
 sync_retry_backoff_seconds = 1.0
+sync_failure_cooldown_seconds = 120.0
 """
 
         config_path = str(get_config_path("app.toml"))

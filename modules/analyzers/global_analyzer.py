@@ -20,6 +20,8 @@ from modules.shared.db_path_manager import get_db_path_manager
 from modules.shared.logger_config import log_info, log_warning, log_error
 from modules.shared.stock_exclusion import is_excluded_stock
 from modules.shared.paths import get_config_path
+from modules.shared.market_data_store import MarketDataStore
+from modules.shared.t0_board import compute_session_trade_date, build_t0_dual_board
 from modules.analyzers.sector_heat import build_topic_time_filter, aggregate_sector_heat, match_sector_keywords
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -44,12 +46,18 @@ class GlobalAnalyzer:
     """跨群组全局数据聚合引擎"""
     _init_lock = threading.RLock()
     _initialized_dbs: Set[str] = set()
+    _events_refresh_state_lock = threading.RLock()
+    _events_refresh_state: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self):
         self.db_path_manager = get_db_path_manager()
+        self.market_store = MarketDataStore()
         self._cache = {}
         self._cache_time = {}
-        self._cache_ttl = 60  # 缓存有效期60秒
+        self._cache_ttl = 60  # 兼容旧路径默认TTL（秒）
+        self._cache_ttl_finalized = 900  # 非详情分析口径缓存（15分钟）
+        self._cache_ttl_live = 60  # 详情实时口径缓存（60秒）
+        self._cache_ttl_by_key: Dict[str, int] = {}
         self._alias_mtime: float = -1.0
         self._alias_to_std: Dict[str, str] = {}
         self._std_to_aliases: Dict[str, Set[str]] = {}
@@ -57,11 +65,13 @@ class GlobalAnalyzer:
     def _is_cache_valid(self, key: str) -> bool:
         if key not in self._cache_time:
             return False
-        return (datetime.now() - self._cache_time[key]).total_seconds() < self._cache_ttl
+        ttl = int(self._cache_ttl_by_key.get(key, self._cache_ttl))
+        return (datetime.now() - self._cache_time[key]).total_seconds() < ttl
 
-    def _set_cache(self, key: str, data: Any):
+    def _set_cache(self, key: str, data: Any, ttl_seconds: Optional[int] = None):
         self._cache[key] = data
         self._cache_time[key] = datetime.now()
+        self._cache_ttl_by_key[key] = int(ttl_seconds if ttl_seconds is not None else self._cache_ttl)
 
     def _with_cache_hit(self, data: Any, cache_hit: bool) -> Any:
         if isinstance(data, dict):
@@ -74,6 +84,63 @@ class GlobalAnalyzer:
         """清除全部缓存（调度器每轮结束后调用）"""
         self._cache.clear()
         self._cache_time.clear()
+        self._cache_ttl_by_key.clear()
+
+    def get_data_anchor_date(self) -> str:
+        """返回最近已固化交易日；若暂无固化数据则回退今天。"""
+        anchor = self.market_store.get_latest_trade_date(only_final=True)
+        if anchor:
+            return str(anchor)
+        return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+
+    def _normalize_finalized_date_window(
+        self,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        default_days: Optional[int] = None,
+    ) -> Tuple[Optional[str], str, str]:
+        """
+        非详情分析统一锚定到 anchor_date。
+        返回: (effective_start_date, effective_end_date, anchor_date)
+        """
+        anchor_date = self.get_data_anchor_date()
+        requested_end = str(end_date or anchor_date)
+        effective_end = min(requested_end, anchor_date)
+
+        effective_start = str(start_date) if start_date else None
+        if not effective_start and default_days:
+            try:
+                end_dt = datetime.strptime(effective_end, "%Y-%m-%d")
+                effective_start = (end_dt - timedelta(days=int(default_days))).strftime("%Y-%m-%d")
+            except Exception:
+                effective_start = None
+
+        if effective_start and effective_start > effective_end:
+            effective_start = effective_end
+
+        return effective_start, effective_end, anchor_date
+
+    def _with_meta(
+        self,
+        data: Any,
+        *,
+        cache_hit: bool,
+        data_mode: str,
+        anchor_date: Optional[str] = None,
+        effective_start_date: Optional[str] = None,
+        effective_end_date: Optional[str] = None,
+    ) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = self._with_cache_hit(data, cache_hit)
+        payload["_meta"] = {
+            "cache_hit": bool(cache_hit),
+            "data_mode": str(data_mode),
+            "anchor_date": anchor_date,
+            "effective_start_date": effective_start_date,
+            "effective_end_date": effective_end_date,
+        }
+        return payload
 
     def _get_scan_filter_fingerprint(self) -> str:
         """基于 group_scan_filter 配置生成口径指纹。"""
@@ -481,9 +548,16 @@ class GlobalAnalyzer:
 
     def get_global_stats(self) -> Dict[str, Any]:
         """全局统计概览"""
-        cache_key = self._scoped_cache_key('global_stats')
+        anchor_date = self.get_data_anchor_date()
+        cache_key = self._scoped_cache_key(f'global_stats_anchor_{anchor_date}')
         if self._is_cache_valid(cache_key):
-            return self._with_cache_hit(self._cache[cache_key], True)
+            return self._with_meta(
+                self._cache[cache_key],
+                cache_hit=True,
+                data_mode="finalized",
+                anchor_date=anchor_date,
+                effective_end_date=anchor_date,
+            )
 
         groups = self._get_all_group_dbs()
         total_topics = 0
@@ -529,8 +603,14 @@ class GlobalAnalyzer:
             'unique_stocks': len(total_stocks),
             'total_performance': total_performance
         }
-        self._set_cache(cache_key, result)
-        return self._with_cache_hit(result, False)
+        self._set_cache(cache_key, result, ttl_seconds=self._cache_ttl_finalized)
+        return self._with_meta(
+            result,
+            cache_hit=False,
+            data_mode="finalized",
+            anchor_date=anchor_date,
+            effective_end_date=anchor_date,
+        )
 
     # ========== 全局胜率排行 ==========
 
@@ -547,15 +627,32 @@ class GlobalAnalyzer:
         跨群组胜率排行 (支持过滤、排序、分页)
         优化：并行查询 + 内存过滤/排序
         """
+        effective_start, effective_end, anchor_date = self._normalize_finalized_date_window(
+            start_date=start_date,
+            end_date=end_date,
+        )
         cache_key = self._scoped_cache_key(
-            f"global_win_rate_{min_mentions}_{return_period}_{limit}_{start_date or ''}_{end_date or ''}_{sort_by}_{order}_{page}_{page_size}"
+            f"global_win_rate_anchor_{anchor_date}_{min_mentions}_{return_period}_{limit}_{effective_start or ''}_{effective_end or ''}_{sort_by}_{order}_{page}_{page_size}"
         )
         if self._is_cache_valid(cache_key):
-            return self._with_cache_hit(self._cache[cache_key], True)
+            return self._with_meta(
+                self._cache[cache_key],
+                cache_hit=True,
+                data_mode="finalized",
+                anchor_date=anchor_date,
+                effective_start_date=effective_start,
+                effective_end_date=effective_end,
+            )
 
         # 1. 获取全量数据 (仅按 min_mentions 缓存)
         # return_period 也作为 key，因为 SQL 查询依赖它
-        raw_data = self._get_cached_raw_win_rate(min_mentions, return_period, start_date, end_date)
+        raw_data = self._get_cached_raw_win_rate(
+            min_mentions,
+            return_period,
+            effective_start,
+            effective_end,
+            anchor_date,
+        )
 
         # 2. 内存过滤 (Date)
         filtered_results = []
@@ -567,7 +664,7 @@ class GlobalAnalyzer:
             # 注意: 为了支持 date filter，我们需要在 raw data 里保留 mention_date
             # 如果 start_date 存在，我们需要重新计算该股票在范围内的 win_rate
             
-            if not start_date and not end_date:
+            if not effective_start and not effective_end:
                 # 无时间过滤，直接使用预计算好的统计值
                 filtered_results.append(item)
                 continue
@@ -584,9 +681,9 @@ class GlobalAnalyzer:
                 item.get('detail_groups', []),
                 item.get('detail_benchmark_returns', []),
             ):
-                if start_date and date_str < start_date:
+                if effective_start and date_str < effective_start:
                     continue
-                if end_date and date_str > end_date:
+                if effective_end and date_str > effective_end:
                     continue
                 if ret is None:
                     continue
@@ -659,19 +756,27 @@ class GlobalAnalyzer:
             'page': page,
             'page_size': page_size
         }
-        self._set_cache(cache_key, result)
-        return self._with_cache_hit(result, False)
+        self._set_cache(cache_key, result, ttl_seconds=self._cache_ttl_finalized)
+        return self._with_meta(
+            result,
+            cache_hit=False,
+            data_mode="finalized",
+            anchor_date=anchor_date,
+            effective_start_date=effective_start,
+            effective_end_date=effective_end,
+        )
 
     def _get_cached_raw_win_rate(
         self,
         min_mentions: int,
         return_period: str,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        anchor_date: Optional[str] = None,
     ) -> List[Dict]:
         """获取并缓存原始胜率数据（包含所有详细记录以便二次过滤）"""
         cache_key = self._scoped_cache_key(
-            f"raw_win_rate_{return_period}_{min_mentions}_{start_date or ''}_{end_date or ''}"
+            f"raw_win_rate_anchor_{anchor_date or ''}_{return_period}_{min_mentions}_{start_date or ''}_{end_date or ''}"
         )
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -768,7 +873,7 @@ class GlobalAnalyzer:
         duration = time.time() - start_time
         log_info(f"Global Win Rate Raw Data Loaded: {len(results)} stocks in {duration:.2f}s")
         
-        self._set_cache(cache_key, results)
+        self._set_cache(cache_key, results, ttl_seconds=self._cache_ttl_finalized)
         return results
 
     def _fetch_group_win_rate_data(
@@ -812,11 +917,99 @@ class GlobalAnalyzer:
 
     # ========== 全局股票事件详情 ==========
 
-    def get_global_stock_events(self, stock_code: str) -> Dict[str, Any]:
-        """获取某只股票在所有群组的提及事件（含完整话题文本 + 关联股票）"""
-        cache_key = self._scoped_cache_key(f"global_stock_events_{stock_code}")
-        if self._is_cache_valid(cache_key):
-            return self._with_cache_hit(self._cache[cache_key], True)
+    def _events_refresh_key(self, stock_code: str) -> str:
+        return f"global:{str(stock_code or '').upper()}"
+
+    def _read_events_refresh_state(self, stock_code: str) -> Dict[str, Any]:
+        key = self._events_refresh_key(stock_code)
+        with GlobalAnalyzer._events_refresh_state_lock:
+            state = dict(GlobalAnalyzer._events_refresh_state.get(key, {}))
+        return {
+            "refresh_state": str(state.get("refresh_state") or "idle"),
+            "last_refresh_at": state.get("last_refresh_at"),
+            "last_refresh_error": state.get("last_refresh_error"),
+        }
+
+    def _update_events_refresh_state(
+        self,
+        stock_code: str,
+        refresh_state: str,
+        *,
+        last_refresh_at: Optional[str] = None,
+        last_refresh_error: Optional[str] = None,
+    ) -> None:
+        key = self._events_refresh_key(stock_code)
+        with GlobalAnalyzer._events_refresh_state_lock:
+            current = dict(GlobalAnalyzer._events_refresh_state.get(key, {}))
+            current["refresh_state"] = str(refresh_state)
+            if last_refresh_at is not None:
+                current["last_refresh_at"] = last_refresh_at
+            if last_refresh_error is not None:
+                current["last_refresh_error"] = last_refresh_error
+            GlobalAnalyzer._events_refresh_state[key] = current
+
+    def schedule_global_stock_events_refresh(self, stock_code: str) -> Dict[str, Any]:
+        state = self._read_events_refresh_state(stock_code)
+        if state.get("refresh_state") in {"queued", "running"}:
+            return {"queued": False, "refresh_state": state.get("refresh_state"), "reason": "already_running"}
+        self._update_events_refresh_state(stock_code, "queued", last_refresh_error="")
+
+        def _run_job():
+            self._update_events_refresh_state(stock_code, "running", last_refresh_error="")
+            try:
+                self.get_global_stock_events(
+                    stock_code=stock_code,
+                    refresh_realtime=True,
+                    detail_mode="full",
+                    page=1,
+                    per_page=50,
+                    include_full_text=False,
+                )
+                self._update_events_refresh_state(
+                    stock_code,
+                    "completed",
+                    last_refresh_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    last_refresh_error="",
+                )
+            except Exception as e:
+                self._update_events_refresh_state(
+                    stock_code,
+                    "failed",
+                    last_refresh_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    last_refresh_error=str(e),
+                )
+
+        t = threading.Thread(target=_run_job, daemon=True, name=f"global-stock-events-refresh-{stock_code}")
+        t.start()
+        return {"queued": True, "refresh_state": "queued"}
+
+    def get_global_stock_events(
+        self,
+        stock_code: str,
+        refresh_realtime: bool = False,
+        detail_mode: str = "fast",
+        page: int = 1,
+        per_page: int = 50,
+        include_full_text: bool = False,
+    ) -> Dict[str, Any]:
+        """获取某只股票在所有群组的提及事件（默认 fast 只读本地落库）。"""
+        normalized_detail_mode = str(detail_mode or "fast").strip().lower()
+        if normalized_detail_mode not in {"fast", "full"}:
+            normalized_detail_mode = "fast"
+        page = max(1, int(page or 1))
+        per_page = max(1, min(200, int(per_page or 50)))
+        offset = (page - 1) * per_page
+
+        cache_key = self._scoped_cache_key(
+            f"global_stock_events_{stock_code}_mode_{normalized_detail_mode}_p_{page}_s_{per_page}_f_{int(include_full_text)}"
+        )
+        if (not refresh_realtime) and self._is_cache_valid(cache_key):
+            return self._with_meta(
+                self._cache[cache_key],
+                cache_hit=True,
+                data_mode="live",
+                anchor_date=self.get_data_anchor_date(),
+            )
 
         # 此方法实时查询，不缓存或短缓存
         if is_excluded_stock(stock_code, None):
@@ -829,6 +1022,7 @@ class GlobalAnalyzer:
 
         all_events = []
         stock_name = ""
+        t0_enriched_groups: Set[str] = set()
 
         for group in self._get_all_group_dbs():
             db_path = group['topics_db']
@@ -839,16 +1033,21 @@ class GlobalAnalyzer:
                 # 获取群名
                 group_name = self._get_group_name(conn, group['group_id'])
                 
-                # 查询事件 + 话题全文
+                # 查询事件（默认不取全文，降低首屏 IO）
                 cursor = conn.cursor()
-                cursor.execute('''
+                full_text_col = "tk.text as full_text" if include_full_text else "'' as full_text"
+                talks_join = "LEFT JOIN talks tk ON sm.topic_id = tk.topic_id" if include_full_text else ""
+                cursor.execute(f'''
                     SELECT sm.id, sm.topic_id, sm.context_snippet as context,
                            sm.mention_date, sm.mention_time, sm.stock_name,
                            mp.return_1d, mp.return_3d, mp.return_5d, mp.return_10d, mp.return_20d,
-                           tk.text as full_text
+                           mp.t0_buy_price, mp.t0_buy_ts, mp.t0_buy_source,
+                           mp.t0_end_price_rt, mp.t0_end_price_rt_ts,
+                           mp.t0_end_price_close, mp.t0_end_price_close_ts,
+                           mp.t0_return_rt, mp.t0_return_close, mp.t0_status, mp.t0_note, {full_text_col}
                     FROM stock_mentions sm
                     LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
-                    LEFT JOIN talks tk ON sm.topic_id = tk.topic_id
+                    {talks_join}
                     WHERE sm.stock_code = ?
                     ORDER BY sm.mention_time DESC
                 ''', (stock_code,))
@@ -857,6 +1056,78 @@ class GlobalAnalyzer:
                 if rows:
                     if not stock_name:
                         stock_name = rows[0][5]  # stock_name
+
+                    today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+                    close_finalize_time = str(self.market_store.close_finalize_time or "15:05")
+                    # full 模式下，若当前群组该股票的 t0 尚未生成，则借助分群 analyzer 补算后再读取。
+                    need_t0_backfill = any(
+                        (
+                            row[11] is None
+                            or str(row[20] or "").strip().lower() in {"", "unavailable"}
+                            or str(row[13] or "").strip().lower() == "pending_open"
+                        )
+                        for row in rows
+                    )
+                    stale_future_finalized = any(
+                        (
+                            str(row[20] or "") == "finalized"
+                            and compute_session_trade_date(
+                                mention_time=str(row[4] or ""),
+                                mention_date=str(row[3] or ""),
+                                close_finalize_time=close_finalize_time,
+                                open_time="09:30",
+                            )[0] > today
+                        )
+                        for row in rows
+                    )
+                    stale_legacy_t0 = any(
+                        (
+                            str(row[20] or "") == "finalized"
+                            and str(row[21] or "").find("历史提及使用最近成交价近似") >= 0
+                            and compute_session_trade_date(
+                                mention_time=str(row[4] or ""),
+                                mention_date=str(row[3] or ""),
+                                close_finalize_time=close_finalize_time,
+                                open_time="09:30",
+                            )[0] > str(row[3] or "")
+                        )
+                        for row in rows
+                    )
+                    gid = str(group.get("group_id", ""))
+                    should_recompute_t0 = bool(
+                        normalized_detail_mode == "full"
+                        and (need_t0_backfill or stale_future_finalized or stale_legacy_t0 or refresh_realtime)
+                    )
+                    if should_recompute_t0 and gid and gid not in t0_enriched_groups:
+                        try:
+                            from modules.analyzers.stock_analyzer import StockAnalyzer
+
+                            StockAnalyzer(gid).get_stock_events(
+                                stock_code,
+                                refresh_realtime=bool(refresh_realtime or stale_future_finalized or stale_legacy_t0),
+                                detail_mode="full",
+                                page=1,
+                                per_page=200,
+                                include_full_text=False,
+                            )
+                            t0_enriched_groups.add(gid)
+                            cursor.execute(f'''
+                                SELECT sm.id, sm.topic_id, sm.context_snippet as context,
+                                       sm.mention_date, sm.mention_time, sm.stock_name,
+                                       mp.return_1d, mp.return_3d, mp.return_5d, mp.return_10d, mp.return_20d,
+                                       mp.t0_buy_price, mp.t0_buy_ts, mp.t0_buy_source,
+                                       mp.t0_end_price_rt, mp.t0_end_price_rt_ts,
+                                       mp.t0_end_price_close, mp.t0_end_price_close_ts,
+                                       mp.t0_return_rt, mp.t0_return_close, mp.t0_status, mp.t0_note, {full_text_col}
+                                FROM stock_mentions sm
+                                LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
+                                {talks_join}
+                                WHERE sm.stock_code = ?
+                                ORDER BY sm.mention_time DESC
+                            ''', (stock_code,))
+                            rows = cursor.fetchall()
+                        except Exception as e:
+                            log_warning(f"全局详情 T+0 回补失败: group={gid}, stock={stock_code}, error={e}")
 
                     # 批量查询该群组中这些 topic 下的关联股票
                     topic_ids = list(set(row[1] for row in rows if row[1]))
@@ -888,7 +1159,13 @@ class GlobalAnalyzer:
                     for row in rows:
                         if is_excluded_stock(stock_code, row[5]):
                             continue
-                        full_text = row[11] or ''
+                        session_trade_date, window_tag = compute_session_trade_date(
+                            mention_time=str(row[4] or ""),
+                            mention_date=str(row[3] or ""),
+                            close_finalize_time=str(self.market_store.close_finalize_time or "15:05"),
+                            open_time="09:30",
+                        )
+                        full_text = (row[22] or '') if include_full_text else ''
                         text_snippet = full_text[:500] + ('...' if len(full_text) > 500 else '')
                         topic_id = row[1]
                         all_events.append({
@@ -907,31 +1184,80 @@ class GlobalAnalyzer:
                             'return_3d': row[7],
                             'return_5d': row[8],
                             'return_10d': row[9],
-                            'return_20d': row[10]
+                            'return_20d': row[10],
+                            't0_buy_price': row[11],
+                            't0_buy_ts': row[12],
+                            't0_buy_source': row[13],
+                            't0_end_price_rt': row[14],
+                            't0_end_price_rt_ts': row[15],
+                            't0_end_price_close': row[16],
+                            't0_end_price_close_ts': row[17],
+                            't0_return_rt': row[18],
+                            't0_return_close': row[19],
+                            't0_status': row[20],
+                            't0_note': row[21],
+                            't0_session_trade_date': session_trade_date,
+                            't0_window_tag': window_tag,
                         })
                 conn.close()
             except Exception as e:
                 log_warning(f"查询群组 {group['group_id']} 事件失败: {e}")
 
-        # 按时间倒序排序
+        # 按时间倒序排序 + 分页
         all_events.sort(key=lambda x: x.get('mention_time') or x.get('mention_date') or '', reverse=True)
+        page_events = all_events[offset: offset + per_page]
+
+        finalized_count = sum(1 for e in all_events if str(e.get("t0_status") or "") == "finalized")
+        realtime_count = sum(1 for e in all_events if str(e.get("t0_status") or "") == "realtime")
 
         result = {
             'stock_code': stock_code,
             'stock_name': stock_name,
             'total_mentions': len(all_events),
-            'events': all_events
+            'page': page,
+            'per_page': per_page,
+            'detail_mode': normalized_detail_mode,
+            'include_full_text': bool(include_full_text),
+            't0_finalized': finalized_count > 0 and realtime_count == 0,
+            't0_data_mode': 'batch_local_snapshot',
+            'refresh_source': 'manual' if refresh_realtime else 'auto_local',
+            'provider_path': ['akshare', 'tx', 'sina', 'tushare'],
+            't0_board': build_t0_dual_board(
+                events=page_events,
+                close_finalize_time=str(self.market_store.close_finalize_time or "15:05"),
+                open_time="09:30",
+            ),
+            'events': page_events
         }
-        self._set_cache(cache_key, result)
-        return self._with_cache_hit(result, False)
+        refresh_state = self._read_events_refresh_state(stock_code)
+        result["refresh_state"] = refresh_state.get("refresh_state") or "idle"
+        result["last_refresh_at"] = refresh_state.get("last_refresh_at")
+        result["last_refresh_error"] = refresh_state.get("last_refresh_error")
+        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        snap = self.market_store.get_symbol_day_snapshot_info(stock_code=stock_code, trade_date=today)
+        result["snapshot_ts"] = snap.get("fetched_at")
+        result["snapshot_is_final"] = snap.get("is_final")
+        if not refresh_realtime:
+            self._set_cache(cache_key, result, ttl_seconds=self._cache_ttl_live)
+        return self._with_meta(
+            result,
+            cache_hit=False,
+            data_mode="live",
+            anchor_date=self.get_data_anchor_date(),
+        )
 
     # ========== 全局板块热度 ==========
 
     def get_global_sector_heat(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
         """跨群组板块热度聚合（按帖子文本计数）。"""
         from modules.analyzers.stock_analyzer import SECTOR_KEYWORDS
+        effective_start, effective_end, anchor_date = self._normalize_finalized_date_window(
+            start_date=start_date,
+            end_date=end_date,
+            default_days=30,
+        )
         cache_key = self._scoped_cache_key(
-            f'global_sector_heat_posts_v2_{start_date or ""}_{end_date or ""}'
+            f'global_sector_heat_posts_v2_anchor_{anchor_date}_{effective_start or ""}_{effective_end or ""}'
         )
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -948,8 +1274,8 @@ class GlobalAnalyzer:
                 executor.submit(
                     self._compute_group_sector_heat,
                     group,
-                    start_date,
-                    end_date,
+                    effective_start,
+                    effective_end,
                     SECTOR_KEYWORDS,
                 )
                 for group in groups
@@ -993,10 +1319,10 @@ class GlobalAnalyzer:
         log_info(
             "Global sector heat computed "
             f"(groups={len(groups)}, topics={scanned_topics}, matched={matched_mentions}, "
-            f"sectors={len(results)}, start={start_date or '-'}, end={end_date or '-'}, "
+            f"sectors={len(results)}, start={effective_start or '-'}, end={effective_end or '-'}, "
             f"duration={duration:.2f}s)"
         )
-        self._set_cache(cache_key, results)
+        self._set_cache(cache_key, results, ttl_seconds=self._cache_ttl_finalized)
         return results
 
     def _compute_group_sector_heat(
@@ -1061,11 +1387,18 @@ class GlobalAnalyzer:
         """
         跨群共识信号：多个群同时提及的股票 = 更高权重
         """
-        cache_key = self._scoped_cache_key(f'signals_{lookback_days}_{min_mentions}_{start_date or ""}_{end_date or ""}')
+        effective_start, effective_end, anchor_date = self._normalize_finalized_date_window(
+            start_date=start_date,
+            end_date=end_date,
+            default_days=max(int(lookback_days or 1), 1),
+        )
+        cache_key = self._scoped_cache_key(
+            f'signals_anchor_{anchor_date}_{lookback_days}_{min_mentions}_{effective_start or ""}_{effective_end or ""}'
+        )
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]
 
-        since_date = start_date or (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+        since_date = effective_start or (datetime.now(BEIJING_TZ) - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
 
         stock_signals: Dict[str, StockSignal] = {}
 
@@ -1077,25 +1410,29 @@ class GlobalAnalyzer:
                 conn = self._get_conn(db_path)
                 cursor = conn.cursor()
                 group_name = self._get_group_name(conn, group['group_id'])
-                query = '''
+                window_cond = 'sm.mention_date >= ?'
+                params: List[Any] = [since_date]
+                if effective_end:
+                    window_cond += ' AND sm.mention_date <= ?'
+                    params.append(effective_end)
+
+                # 近期提及使用时间窗过滤；历史收益统计使用全历史，避免信号面板大量空值。
+                query = f'''
                     SELECT
                         sm.stock_code,
                         MAX(sm.stock_name) AS stock_name,
-                        COUNT(*) AS mention_count,
-                        MAX(sm.mention_date) AS latest_mention_date,
+                        SUM(CASE WHEN {window_cond} THEN 1 ELSE 0 END) AS mention_count,
+                        MAX(CASE WHEN {window_cond} THEN sm.mention_date ELSE NULL END) AS latest_mention_date,
                         AVG(mp.return_5d) AS avg_return_5d,
                         SUM(CASE WHEN mp.return_5d > 0 THEN 1 ELSE 0 END) AS positive_returns,
                         SUM(CASE WHEN mp.return_5d IS NOT NULL THEN 1 ELSE 0 END) AS valid_returns
                     FROM stock_mentions sm
                     LEFT JOIN mention_performance mp ON sm.id = mp.mention_id
-                    WHERE sm.mention_date >= ?
+                    GROUP BY sm.stock_code
+                    HAVING SUM(CASE WHEN {window_cond} THEN 1 ELSE 0 END) >= ?
                 '''
-                params: List[Any] = [since_date]
-                if end_date:
-                    query += ' AND sm.mention_date <= ?'
-                    params.append(end_date)
-                query += ' GROUP BY sm.stock_code'
-                cursor.execute(query, params)
+                # window_cond 在 SELECT/HAVING 中共出现 3 次，参数也要重复 3 次。
+                cursor.execute(query, params + params + params + [min_mentions])
                 for code, name, mention_count, latest_date, avg_ret, positive_returns, valid_returns in cursor.fetchall():
                     if is_excluded_stock(code, name):
                         continue
@@ -1143,7 +1480,7 @@ class GlobalAnalyzer:
             })
 
         results.sort(key=lambda x: -x['weight'])
-        self._set_cache(cache_key, results)
+        self._set_cache(cache_key, results, ttl_seconds=self._cache_ttl_finalized)
         return results
 
     def get_global_sector_topics(self, sector: str, start_date: Optional[str] = None,
@@ -1151,11 +1488,23 @@ class GlobalAnalyzer:
                                  page_size: int = 20) -> Dict[str, Any]:
         """全局板块话题明细（跨群组）"""
         from modules.analyzers.stock_analyzer import SECTOR_KEYWORDS
+        effective_start, effective_end, anchor_date = self._normalize_finalized_date_window(
+            start_date=start_date,
+            end_date=end_date,
+            default_days=30,
+        )
         cache_key = self._scoped_cache_key(
-            f"global_sector_topics_{sector}_{start_date or ''}_{end_date or ''}_{page}_{page_size}"
+            f"global_sector_topics_anchor_{anchor_date}_{sector}_{effective_start or ''}_{effective_end or ''}_{page}_{page_size}"
         )
         if self._is_cache_valid(cache_key):
-            return self._with_cache_hit(self._cache[cache_key], True)
+            return self._with_meta(
+                self._cache[cache_key],
+                cache_hit=True,
+                data_mode="finalized",
+                anchor_date=anchor_date,
+                effective_start_date=effective_start,
+                effective_end_date=effective_end,
+            )
 
         if sector not in SECTOR_KEYWORDS:
             raise ValueError(f"未知板块: {sector}")
@@ -1175,8 +1524,8 @@ class GlobalAnalyzer:
                 group_name = self._get_group_name(conn, group['group_id'])
 
                 date_clause, params = build_topic_time_filter(
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=effective_start,
+                    end_date=effective_end,
                     column='t.create_time',
                 )
                 cursor.execute(f'''
@@ -1259,8 +1608,15 @@ class GlobalAnalyzer:
             'page_size': page_size,
             'items': matched_topics[start_idx:end_idx]
         }
-        self._set_cache(cache_key, result)
-        return self._with_cache_hit(result, False)
+        self._set_cache(cache_key, result, ttl_seconds=self._cache_ttl_finalized)
+        return self._with_meta(
+            result,
+            cache_hit=False,
+            data_mode="finalized",
+            anchor_date=anchor_date,
+            effective_start_date=effective_start,
+            effective_end_date=effective_end,
+        )
 
     # ========== 群组概览 ==========
 

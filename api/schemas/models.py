@@ -150,6 +150,23 @@ class GlobalFileDownloadRequest(BaseModel):
     long_sleep_interval_max: Optional[float] = None
 
 
+class MarketDataSourceSettingsRequest(BaseModel):
+    providers: List[str] = Field(default_factory=lambda: ["tx", "sina", "akshare", "tushare"])
+    realtime_providers: List[str] = Field(default_factory=lambda: ["akshare", "tx", "sina", "tushare"])
+    realtime_provider_failover_enabled: bool = True
+    provider_failover_enabled: bool = True
+    provider_circuit_breaker_seconds: float = Field(default=300.0, ge=0.0, le=3600.0)
+    sync_retry_max: int = Field(default=3, ge=1, le=10)
+    sync_retry_backoff_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
+    sync_failure_cooldown_seconds: float = Field(default=120.0, ge=0.0, le=3600.0)
+    tushare_token: Optional[str] = Field(default=None, description="可选；传空字符串将清空")
+
+
+class MarketDataProbeRequest(BaseModel):
+    providers: Optional[List[str]] = None
+    symbol: str = Field(default="000001.SZ")
+
+
 class ScanFilterConfigRequest(BaseModel):
     default_action: str = Field(default="include")
     whitelist_group_ids: List[str] = Field(default_factory=list)

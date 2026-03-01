@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +32,10 @@ interface LogMessage {
   status?: string;
 }
 
+interface TaskStatusResponse {
+  status?: string;
+}
+
 export default function TaskLogViewer({
   taskId,
   onClose,
@@ -50,15 +54,92 @@ export default function TaskLogViewer({
   const eventSourceRef = useRef<EventSource | null>(null);
   const onTaskStopRef = useRef<(() => void) | undefined>(onTaskStop);
   const terminalRef = useRef(false);
+  const logsCountRef = useRef(0);
+  const seenLogsRef = useRef<Set<string>>(new Set());
+  const shouldAutoScrollRef = useRef(true);
+
+  const getScrollViewport = useCallback((): HTMLDivElement | null => {
+    return scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') ?? null;
+  }, []);
+
+  const isNearBottom = useCallback((el: HTMLDivElement, thresholdPx: number = 48): boolean => {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= thresholdPx;
+  }, []);
 
   useEffect(() => {
     onTaskStopRef.current = onTaskStop;
   }, [onTaskStop]);
 
+  const replaceLogs = useCallback((nextLogs: string[]) => {
+    logsCountRef.current = nextLogs.length;
+    seenLogsRef.current = new Set(nextLogs);
+    setLogs(nextLogs);
+  }, []);
+
+  const appendLogIfNew = useCallback((log: string) => {
+    const seen = seenLogsRef.current;
+    if (seen.has(log)) return;
+    seen.add(log);
+    logsCountRef.current += 1;
+    setLogs(prev => [...prev, log]);
+  }, []);
+
+  useEffect(() => {
+    logsCountRef.current = logs.length;
+  }, [logs.length]);
+
+  useEffect(() => {
+    if (!taskId) return;
+    let disposed = false;
+
+    const loadLogsOnce = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/logs`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (disposed) return;
+        const nextLogs = Array.isArray(data?.logs) ? data.logs.map((v: unknown) => String(v)) : [];
+        if (nextLogs.length > 0) {
+          replaceLogs(nextLogs);
+        }
+      } catch (error) {
+        console.error('获取任务日志失败:', error);
+      }
+    };
+
+    const loadStatusOnce = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as TaskStatusResponse;
+        if (disposed) return;
+        if (typeof data?.status === 'string' && data.status.trim()) {
+          setStatus(data.status);
+        }
+      } catch (error) {
+        console.error('获取任务状态失败:', error);
+      }
+    };
+
+    void loadLogsOnce();
+    void loadStatusOnce();
+
+    const timer = window.setInterval(() => {
+      void loadLogsOnce();
+      void loadStatusOnce();
+    }, 2000);
+
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [taskId, replaceLogs]);
+
   useEffect(() => {
     if (!taskId) return;
     terminalRef.current = false;
-    setLogs([]);
+    shouldAutoScrollRef.current = true;
+    replaceLogs([]);
     setStatus('pending');
 
     // 建立SSE连接
@@ -75,7 +156,7 @@ export default function TaskLogViewer({
         const data: LogMessage = JSON.parse(event.data);
 
         if (data.type === 'log' && data.message) {
-          setLogs(prev => [...prev, data.message!]);
+          appendLogIfNew(data.message);
 
           // 检测过期相关的日志消息
           if (data.message.includes('会员已过期') || data.message.includes('成员体验已到期')) {
@@ -125,7 +206,7 @@ export default function TaskLogViewer({
       eventSource.close();
       eventSourceRef.current = null;
     };
-  }, [taskId]);
+  }, [taskId, appendLogIfNew, replaceLogs]);
 
   // 监听状态变化，确保任务完成时关闭连接
   useEffect(() => {
@@ -147,13 +228,25 @@ export default function TaskLogViewer({
 
   // 自动滚动到底部
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+    const scrollContainer = getScrollViewport();
+    if (!scrollContainer) return;
+    if (shouldAutoScrollRef.current) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, getScrollViewport]);
+
+  useEffect(() => {
+    const scrollContainer = getScrollViewport();
+    if (!scrollContainer) return;
+
+    const handleScroll = () => {
+      shouldAutoScrollRef.current = isNearBottom(scrollContainer);
+    };
+
+    handleScroll();
+    scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
+    return () => scrollContainer.removeEventListener('scroll', handleScroll);
+  }, [getScrollViewport, isNearBottom, taskId]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -402,7 +495,7 @@ export default function TaskLogViewer({
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4" />
             <CardTitle className="text-sm font-mono">
-              任务日志 - {taskId.slice(0, 8)}
+              任务日志 - {taskId ? taskId.slice(0, 8) : '无任务'}
             </CardTitle>
           </div>
           <div className="flex items-center gap-2">

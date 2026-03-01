@@ -493,3 +493,56 @@ class GroupService:
             "message": f"群组 {group_id} 本地数据" + ("已删除" if any_removed else "不存在"),
             "details": details,
         }
+
+    def delete_all_groups_local(self) -> Dict[str, Any]:
+        group_ids = sorted(list(self.scan_local_groups()))
+
+        results: List[Dict[str, Any]] = []
+        deleted_count = 0
+        failed_count = 0
+
+        for gid in group_ids:
+            gid_str = str(gid)
+            try:
+                res = self.delete_group_local(gid_str)
+                details = res.get("details", {}) if isinstance(res, dict) else {}
+                removed = any(bool(v) for v in details.values()) if isinstance(details, dict) else False
+                if removed:
+                    deleted_count += 1
+                results.append(
+                    {
+                        "group_id": gid_str,
+                        "success": True,
+                        "deleted": removed,
+                        "message": res.get("message") if isinstance(res, dict) else "",
+                    }
+                )
+            except Exception as e:
+                failed_count += 1
+                results.append(
+                    {
+                        "group_id": gid_str,
+                        "success": False,
+                        "deleted": False,
+                        "message": str(e),
+                    }
+                )
+
+        self._local_groups_cache["ids"] = set()
+        self._local_groups_cache["scanned_at"] = time.time()
+
+        try:
+            from modules.analyzers.global_analyzer import get_global_analyzer
+
+            get_global_analyzer().invalidate_cache()
+        except Exception:
+            pass
+
+        return {
+            "success": failed_count == 0,
+            "total_groups": len(group_ids),
+            "deleted_groups": deleted_count,
+            "failed_groups": failed_count,
+            "results": results,
+            "message": f"全量删除完成: 总计 {len(group_ids)} 个群组，成功删除 {deleted_count} 个，失败 {failed_count} 个",
+        }

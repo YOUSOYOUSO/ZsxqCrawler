@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from api.schemas.models import (
@@ -6,12 +8,14 @@ from api.schemas.models import (
     GlobalFileDownloadRequest,
     ScanFilterConfigRequest,
 )
+from api.services.global_data_correction_service import GlobalDataCorrectionService
 from api.services.global_scan_filter_service import GlobalScanFilterService
 from api.services.global_task_service import GlobalTaskService
 
 router = APIRouter(tags=["global-tasks"])
 service = GlobalTaskService()
 scan_filter_service = GlobalScanFilterService()
+correction_service = GlobalDataCorrectionService(task_service=service)
 
 
 @router.post("/api/global/crawl")
@@ -30,8 +34,16 @@ def api_global_files_download(request: GlobalFileDownloadRequest, background_tas
 
 
 @router.post("/api/global/analyze/performance")
-def api_global_analyze_performance(background_tasks: BackgroundTasks, force: bool = False):
-    return service.start_global_analyze_performance(background_tasks=background_tasks, force=force)
+def api_global_analyze_performance(
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    calc_window_days: int | None = None,
+):
+    return correction_service.start_performance_correction(
+        background_tasks=background_tasks,
+        force=force,
+        calc_window_days=calc_window_days,
+    )
 
 
 @router.post("/api/stocks/exclude/cleanup")
@@ -45,11 +57,31 @@ async def cleanup_blacklist_data(background_tasks: BackgroundTasks):
 
 
 @router.post("/api/global/scan")
-def scan_global(background_tasks: BackgroundTasks, force: bool = False, exclude_non_stock: bool = False):
+def scan_global(
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    exclude_non_stock: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    if (start_date and not end_date) or (end_date and not start_date):
+        raise HTTPException(status_code=400, detail="start_date 与 end_date 必须同时提供")
+
+    if start_date and end_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式错误，请使用 YYYY-MM-DD")
+        if start_dt > end_dt:
+            raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+
     return service.start_scan_global(
         background_tasks=background_tasks,
         force=force,
         exclude_non_stock=exclude_non_stock,
+        start_date=start_date,
+        end_date=end_date,
     )
 
 

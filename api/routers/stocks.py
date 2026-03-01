@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 
 from modules.analyzers.ai_analyzer import AIAnalyzer
 from modules.shared.db_path_manager import get_db_path_manager
@@ -11,6 +12,33 @@ from api.services.stock_scan_service import StockScanService
 
 router = APIRouter(tags=["stocks", "ai"])
 scan_service = StockScanService()
+
+
+def _extract_cache_hit(payload: object) -> Optional[bool]:
+    if isinstance(payload, dict):
+        meta = payload.get("_meta")
+        if isinstance(meta, dict) and "cache_hit" in meta:
+            return bool(meta.get("cache_hit"))
+        if "_cache_hit" in payload:
+            return bool(payload.get("_cache_hit"))
+    return None
+
+
+def _set_data_headers(response: Response, payload: object) -> None:
+    cache_hit = _extract_cache_hit(payload)
+    if cache_hit is not None:
+        response.headers["X-Cache-Hit"] = "1" if cache_hit else "0"
+    if not isinstance(payload, dict):
+        return
+    meta = payload.get("_meta")
+    if not isinstance(meta, dict):
+        return
+    anchor_date = str(meta.get("anchor_date") or "").strip()
+    data_mode = str(meta.get("data_mode") or "").strip()
+    if anchor_date:
+        response.headers["X-Data-Anchor-Date"] = anchor_date
+    if data_mode:
+        response.headers["X-Data-Mode"] = data_mode
 
 
 def _get_ai_analyzer(group_id: str) -> AIAnalyzer:
@@ -44,12 +72,41 @@ def get_stock_mentions(
 
 
 @router.get("/api/groups/{group_id}/stock/{stock_code}/events")
-def get_stock_events(group_id: str, stock_code: str):
+def get_stock_events(
+    group_id: str,
+    stock_code: str,
+    response: Response,
+    refresh_realtime: bool = False,
+    detail_mode: str = "fast",
+    page: int = 1,
+    per_page: int = 50,
+    include_full_text: bool = False,
+):
     try:
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_stock_events(stock_code)
+        data = analyzer.get_stock_events(
+            stock_code,
+            refresh_realtime=refresh_realtime,
+            detail_mode=detail_mode,
+            page=page,
+            per_page=per_page,
+            include_full_text=include_full_text,
+        )
+        if bool(data.get("refresh_skipped")):
+            response.headers["X-Refresh-Skipped"] = "1"
+        _set_data_headers(response, data)
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取股票事件失败: {str(e)}")
+
+
+@router.post("/api/groups/{group_id}/stock/{stock_code}/events/refresh")
+def trigger_stock_events_refresh(group_id: str, stock_code: str):
+    try:
+        analyzer = StockAnalyzer(group_id)
+        return analyzer.schedule_stock_events_refresh(stock_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"触发股票事件刷新失败: {str(e)}")
 
 
 @router.get("/api/groups/{group_id}/stock/{stock_code}/price")
@@ -64,6 +121,7 @@ def get_stock_price_with_mentions(group_id: str, stock_code: str, days: int = 90
 @router.get("/api/groups/{group_id}/stock/win-rate")
 def get_stock_win_rate(
     group_id: str,
+    response: Response,
     min_mentions: int = 2,
     return_period: str = "return_5d",
     limit: int = 50,
@@ -77,7 +135,7 @@ def get_stock_win_rate(
     try:
         min_mentions = max(1, min_mentions)
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_win_rate_ranking(
+        data = analyzer.get_win_rate_ranking(
             min_mentions=min_mentions,
             return_period=return_period,
             limit=limit,
@@ -88,15 +146,23 @@ def get_stock_win_rate(
             sort_by=sort_by,
             order=order,
         )
+        _set_data_headers(response, data)
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取胜率排行失败: {str(e)}")
 
 
 @router.get("/api/groups/{group_id}/stock/sector-heat")
-def get_sector_heatmap(group_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
+def get_sector_heatmap(group_id: str, response: Response, start_date: Optional[str] = None, end_date: Optional[str] = None):
     try:
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_sector_heatmap(start_date=start_date, end_date=end_date)
+        data = analyzer.get_sector_heatmap(start_date=start_date, end_date=end_date)
+        _set_data_headers(response, data)
+        if "X-Data-Mode" not in response.headers:
+            response.headers["X-Data-Mode"] = "finalized"
+        if "X-Data-Anchor-Date" not in response.headers:
+            response.headers["X-Data-Anchor-Date"] = analyzer.get_data_anchor_date()
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取板块热度失败: {str(e)}")
 
@@ -104,6 +170,7 @@ def get_sector_heatmap(group_id: str, start_date: Optional[str] = None, end_date
 @router.get("/api/groups/{group_id}/stock/signals")
 def get_stock_signals(
     group_id: str,
+    response: Response,
     lookback_days: int = 7,
     min_mentions: int = 2,
     start_date: Optional[str] = None,
@@ -112,12 +179,18 @@ def get_stock_signals(
     try:
         min_mentions = max(1, min_mentions)
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_signals(
+        data = analyzer.get_signals(
             lookback_days=lookback_days,
             min_mentions=min_mentions,
             start_date=start_date,
             end_date=end_date,
         )
+        _set_data_headers(response, data)
+        if "X-Data-Mode" not in response.headers:
+            response.headers["X-Data-Mode"] = "finalized"
+        if "X-Data-Anchor-Date" not in response.headers:
+            response.headers["X-Data-Anchor-Date"] = analyzer.get_data_anchor_date()
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取信号雷达失败: {str(e)}")
 
@@ -125,6 +198,7 @@ def get_stock_signals(
 @router.get("/api/groups/{group_id}/stock/sector-topics")
 def get_sector_topics(
     group_id: str,
+    response: Response,
     sector: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -133,13 +207,15 @@ def get_sector_topics(
 ):
     try:
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_sector_topics(
+        data = analyzer.get_sector_topics(
             sector=sector,
             start_date=start_date,
             end_date=end_date,
             page=page,
             page_size=page_size,
         )
+        _set_data_headers(response, data)
+        return data
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -147,10 +223,12 @@ def get_sector_topics(
 
 
 @router.get("/api/groups/{group_id}/stock/stats")
-def get_stock_stats(group_id: str):
+def get_stock_stats(group_id: str, response: Response):
     try:
         analyzer = StockAnalyzer(group_id)
-        return analyzer.get_summary_stats()
+        data = analyzer.get_summary_stats()
+        _set_data_headers(response, data)
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
 
@@ -158,8 +236,32 @@ def get_stock_stats(group_id: str):
 
 
 @router.post("/api/groups/{group_id}/stock/scan")
-def scan_group_stocks(group_id: str, background_tasks: BackgroundTasks, force: bool = False):
-    return scan_service.start_scan(group_id=group_id, background_tasks=background_tasks, force=force)
+def scan_group_stocks(
+    group_id: str,
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    if (start_date and not end_date) or (end_date and not start_date):
+        raise HTTPException(status_code=400, detail="start_date 与 end_date 必须同时提供")
+
+    if start_date and end_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式错误，请使用 YYYY-MM-DD")
+        if start_dt > end_dt:
+            raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+
+    return scan_service.start_scan(
+        group_id=group_id,
+        background_tasks=background_tasks,
+        force=force,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 @router.get("/api/ai/config")

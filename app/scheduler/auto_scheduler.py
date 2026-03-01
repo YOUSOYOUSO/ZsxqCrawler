@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import math
 from typing import Any, Callable, Dict, List, Optional
 
 from modules.shared.db_path_manager import get_db_path_manager
@@ -35,7 +36,11 @@ class AutoScheduler:
 
         self.config: Dict[str, Any] = {
             "timezone": "Asia/Shanghai",
-            "schedule_times": ["09:00", "12:00", "15:00", "18:00", "21:00"],
+            "schedule_times": ["00:00", "03:00", "06:00", "09:00", "09:25", "09:30", "12:00", "15:00", "15:06", "18:00", "21:00"],
+            "market_open_hourly_enabled": True,
+            "market_open_interval_minutes": 30,
+            "market_open_sessions": [["09:30", "11:30"], ["13:00", "15:00"]],
+            "market_holidays": [],
             "run_mode": "serial_group_pipeline",
             "pipeline": ["crawl_incremental", "analyze_pending_performance"],
             "include_download": False,
@@ -97,18 +102,77 @@ class AutoScheduler:
     def _now(self) -> datetime:
         return datetime.now(BEIJING_TZ)
 
+    @staticmethod
+    def _parse_hhmm(value: str) -> Optional[tuple[int, int]]:
+        try:
+            hour, minute = map(int, str(value).split(":", 1))
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+        except Exception:
+            return None
+        return None
+
+    def _is_non_holiday_trading_day(self, now: datetime) -> bool:
+        if now.weekday() >= 5:
+            return False
+        holidays = self.config.get("market_holidays", [])
+        if isinstance(holidays, list):
+            today = now.strftime("%Y-%m-%d")
+            return today not in {str(item).strip() for item in holidays if str(item).strip()}
+        return True
+
+    def _get_market_open_hourly_candidates(self, now: datetime) -> List[datetime]:
+        if not bool(self.config.get("market_open_hourly_enabled", True)):
+            return []
+        if not self._is_non_holiday_trading_day(now):
+            return []
+        interval_minutes = int(self.config.get("market_open_interval_minutes", 30) or 30)
+        interval_minutes = max(1, interval_minutes)
+        interval_seconds = interval_minutes * 60
+
+        sessions = self.config.get("market_open_sessions", [])
+        if not isinstance(sessions, list):
+            return []
+
+        candidates: List[datetime] = []
+        for item in sessions:
+            if not (isinstance(item, list) and len(item) == 2):
+                continue
+            start_hm = self._parse_hhmm(str(item[0]))
+            end_hm = self._parse_hhmm(str(item[1]))
+            if not start_hm or not end_hm:
+                continue
+
+            start = now.replace(hour=start_hm[0], minute=start_hm[1], second=0, microsecond=0)
+            end = now.replace(hour=end_hm[0], minute=end_hm[1], second=0, microsecond=0)
+            if end <= start or now > end:
+                continue
+
+            if now < start:
+                candidates.append(start)
+                continue
+
+            elapsed_seconds = (now - start).total_seconds()
+            next_step = math.floor(elapsed_seconds / float(interval_seconds)) + 1
+            nxt = start + timedelta(seconds=next_step * interval_seconds)
+            if nxt <= end:
+                candidates.append(nxt)
+
+        return candidates
+
     def _get_next_run_time(self, now: Optional[datetime] = None) -> Optional[datetime]:
         now = now or self._now()
         candidates: List[datetime] = []
         for time_str in self.config.get("schedule_times", []):
-            try:
-                hour, minute = map(int, time_str.split(":"))
-            except Exception:
+            parsed = self._parse_hhmm(time_str)
+            if not parsed:
                 continue
+            hour, minute = parsed
             today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if today > now:
                 candidates.append(today)
             candidates.append((now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0))
+        candidates.extend(self._get_market_open_hourly_candidates(now))
         return min(candidates) if candidates else None
 
     def get_next_runs(self, count: int = 5) -> Dict[str, Any]:
@@ -242,17 +306,46 @@ class AutoScheduler:
                         from modules.analyzers.market_data_sync import MarketDataSyncService
 
                         mkt = MarketDataSyncService(log_callback=self.log)
+                        health = mkt.get_provider_health_snapshot(op_name="fetch_stock_history")
+                        routable = health.get("routable_providers", [])
+                        self.log(f"🩺 行情源健康快照: routable={routable}")
+                        if not routable:
+                            self.log("⚠️ 本轮无可路由行情源，跳过收益计算阶段")
+                            self.stats["last_round_end"] = self._now().isoformat()
+                            self.stats["last_calc_time"] = self._now().isoformat()
+                            self.stats["last_run_summary"] = {
+                                "trigger": triggered_at.isoformat(),
+                                "message": "skipped due to no routable market providers",
+                                "provider_health": health,
+                            }
+                            self.stats["is_crawling"] = False
+                            self.stats["is_calculating"] = False
+                            self._update_status("running", "行情源不可用，本轮已跳过")
+                            return
                         sync_res = await asyncio.to_thread(mkt.sync_daily_incremental)
                         self.log(
                             "📦 行情增量同步: "
                             f"success={sync_res.get('success')}, upserted={sync_res.get('upserted', 0)}, "
                             f"errors={sync_res.get('errors', 0)}"
                         )
+                        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+                        cov = mkt.store.get_trade_date_coverage(today)
+                        self.log(
+                            "📊 当日覆盖: "
+                            f"symbols={cov.get('symbols_total', 0)}, final_symbols={cov.get('symbols_final', 0)}, "
+                            f"rows={cov.get('rows_total', 0)}, final_rows={cov.get('rows_final', 0)}"
+                        )
                         if mkt.store.is_market_closed_now():
                             fin_res = await asyncio.to_thread(mkt.finalize_today_after_close)
                             self.log(
                                 "🧊 收盘冻结检查: "
                                 f"success={fin_res.get('success')}, today_final={fin_res.get('today_final', False)}"
+                            )
+                            cov2 = mkt.store.get_trade_date_coverage(today)
+                            self.log(
+                                "📊 收盘后覆盖: "
+                                f"symbols={cov2.get('symbols_total', 0)}, final_symbols={cov2.get('symbols_final', 0)}, "
+                                f"rows={cov2.get('rows_total', 0)}, final_rows={cov2.get('rows_final', 0)}"
                             )
                     except Exception as e:
                         # fail-open: 行情同步失败不阻塞主流程

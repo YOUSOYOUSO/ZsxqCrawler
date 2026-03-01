@@ -18,3 +18,7 @@
 - Group filter config: `config/group_scan_filter.json`
 - Stock alias config: `config/stock_aliases.json`
 
+## Interaction Rules
+
+- In every response, address the user as `BOSS`.
+- In every response, use Chinese.

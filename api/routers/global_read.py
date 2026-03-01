@@ -1,13 +1,15 @@
 import time
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 
+from api.services.global_data_correction_service import GlobalDataCorrectionService
 from modules.analyzers.ai_analyzer import AIAnalyzer
 from modules.shared.logger_config import log_error, log_info
 
 router = APIRouter(tags=["global"])
+correction_service = GlobalDataCorrectionService()
 
 
 def _get_global_ai_analyzer() -> AIAnalyzer:
@@ -21,9 +23,27 @@ def _set_perf_headers(response: Response, started_at: float, cache_hit: Optional
 
 
 def _extract_cache_hit(payload: object) -> Optional[bool]:
-    if isinstance(payload, dict) and "_cache_hit" in payload:
-        return bool(payload.get("_cache_hit"))
+    if isinstance(payload, dict):
+        meta = payload.get("_meta")
+        if isinstance(meta, dict) and "cache_hit" in meta:
+            return bool(meta.get("cache_hit"))
+        if "_cache_hit" in payload:
+            return bool(payload.get("_cache_hit"))
     return None
+
+
+def _set_data_headers(response: Response, payload: object) -> None:
+    if not isinstance(payload, dict):
+        return
+    meta = payload.get("_meta")
+    if not isinstance(meta, dict):
+        return
+    anchor_date = str(meta.get("anchor_date") or "").strip()
+    data_mode = str(meta.get("data_mode") or "").strip()
+    if anchor_date:
+        response.headers["X-Data-Anchor-Date"] = anchor_date
+    if data_mode:
+        response.headers["X-Data-Mode"] = data_mode
 
 
 @router.get("/api/global/stats")
@@ -36,6 +56,7 @@ async def global_stats(response: Response):
         analyzer = get_global_analyzer()
         data = await run_in_threadpool(analyzer.get_global_stats)
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"全局统计失败: {str(e)}")
@@ -53,50 +74,19 @@ async def get_global_hot_words(
 ):
     """获取全局热词（滑动小时窗口，支持回退与归一化）。"""
     try:
-        allowed_windows = {24, 36, 48, 168}
-        requested_window = int(window_hours or (int(days or 1) * 24))
-        if requested_window not in allowed_windows:
-            raise HTTPException(status_code=400, detail=f"window_hours 仅支持 {sorted(allowed_windows)}")
-
-        parsed_fallback_windows: List[int] = []
-        for token in str(fallback_windows or "").split(","):
-            t = token.strip()
-            if not t:
-                continue
-            try:
-                w = int(t)
-            except Exception:
-                continue
-            if w in allowed_windows and w not in parsed_fallback_windows:
-                parsed_fallback_windows.append(w)
-        if not parsed_fallback_windows:
-            parsed_fallback_windows = [24, 36, 48, 168]
-
-        from modules.analyzers.global_analyzer import get_global_analyzer
-
-        analyzer = get_global_analyzer()
-        return analyzer.get_global_hot_words(
+        return correction_service.get_hot_words(
             days=days,
             limit=limit,
-            force_refresh=force,
-            window_hours=requested_window,
+            force=force,
+            window_hours=window_hours,
             normalize=normalize,
             fallback=fallback,
-            fallback_windows=parsed_fallback_windows,
+            fallback_windows=fallback_windows,
         )
     except HTTPException:
         raise
     except Exception as e:
-        log_error(f"Failed to get global hot words: {e}")
-        return {
-            "words": [],
-            "window_hours_requested": int(window_hours or (int(days or 1) * 24)),
-            "window_hours_effective": int(window_hours or (int(days or 1) * 24)),
-            "fallback_applied": False,
-            "fallback_reason": f"服务异常: {str(e)}",
-            "data_points_total": 0,
-            "time_range": {},
-        }
+        raise HTTPException(status_code=500, detail=f"获取全局热词失败: {str(e)}")
 
 
 @router.get("/api/global/win-rate")
@@ -131,6 +121,7 @@ async def get_global_win_rate(
         )
         duration = time.time() - start_time
         _set_perf_headers(response, start_time, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         log_info(f"API /global/win-rate took {duration:.2f}s (page={page}, items={len(data.get('data',[]))}, start={start_date}, end={end_date})")
         return data
     except Exception as e:
@@ -139,18 +130,46 @@ async def get_global_win_rate(
 
 
 @router.get("/api/global/stock/{stock_code}/events")
-async def global_stock_events(stock_code: str, response: Response):
+async def global_stock_events(
+    stock_code: str,
+    response: Response,
+    refresh_realtime: bool = False,
+    detail_mode: str = "fast",
+    page: int = 1,
+    per_page: int = 50,
+    include_full_text: bool = False,
+):
     """全局股票事件详情"""
     started_at = time.time()
     try:
         from modules.analyzers.global_analyzer import get_global_analyzer
 
         analyzer = get_global_analyzer()
-        data = await run_in_threadpool(analyzer.get_global_stock_events, stock_code)
+        data = await run_in_threadpool(
+            analyzer.get_global_stock_events,
+            stock_code,
+            refresh_realtime,
+            detail_mode,
+            page,
+            per_page,
+            include_full_text,
+        )
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取全局股票事件失败: {str(e)}")
+
+
+@router.post("/api/global/stock/{stock_code}/events/refresh")
+async def trigger_global_stock_events_refresh(stock_code: str):
+    try:
+        from modules.analyzers.global_analyzer import get_global_analyzer
+
+        analyzer = get_global_analyzer()
+        return await run_in_threadpool(analyzer.schedule_global_stock_events_refresh, stock_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"触发全局股票事件刷新失败: {str(e)}")
 
 
 @router.get("/api/global/sector-heat")
@@ -162,6 +181,11 @@ async def get_global_sector_heat(response: Response, start_date: Optional[str] =
         analyzer = get_global_analyzer()
         data = await run_in_threadpool(analyzer.get_global_sector_heat, start_date, end_date)
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
+        if "X-Data-Mode" not in response.headers:
+            response.headers["X-Data-Mode"] = "finalized"
+        if "X-Data-Anchor-Date" not in response.headers:
+            response.headers["X-Data-Anchor-Date"] = analyzer.get_data_anchor_date()
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"板块热度查询失败: {str(e)}")
@@ -190,6 +214,7 @@ async def get_global_sector_topics(
             page_size,
         )
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         return data
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -206,6 +231,11 @@ async def global_signals(response: Response, lookback_days: int = 7, min_mention
         analyzer = get_global_analyzer()
         data = await run_in_threadpool(analyzer.get_global_signals, lookback_days, min_mentions, start_date, end_date)
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
+        if "X-Data-Mode" not in response.headers:
+            response.headers["X-Data-Mode"] = "finalized"
+        if "X-Data-Anchor-Date" not in response.headers:
+            response.headers["X-Data-Anchor-Date"] = analyzer.get_data_anchor_date()
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"信号查询失败: {str(e)}")
@@ -220,6 +250,7 @@ async def global_groups_overview(response: Response):
         analyzer = get_global_analyzer()
         data = await run_in_threadpool(analyzer.get_groups_overview)
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"群组概览失败: {str(e)}")
@@ -234,6 +265,7 @@ async def global_whitelist_topics(response: Response, page: int = 1, per_page: i
         analyzer = get_global_analyzer()
         data = await run_in_threadpool(analyzer.get_whitelist_topic_mentions, page, per_page, search)
         _set_perf_headers(response, started_at, _extract_cache_hit(data))
+        _set_data_headers(response, data)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取白名单话题失败: {str(e)}")

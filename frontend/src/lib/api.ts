@@ -384,7 +384,7 @@ class ApiClient {
 
   // 群组相关
   async refreshLocalGroups(): Promise<{ success: boolean; count: number; groups: number[]; error?: string }> {
-    return this.request('/api/local-groups/refresh', {
+    return this.request('/api/global/correction/group-metadata/refresh', {
       method: 'POST',
     });
   }
@@ -605,6 +605,13 @@ class ApiClient {
     });
   }
 
+  // 删除全部群组本地数据（用于重置重爬）
+  async deleteAllGroups() {
+    return this.request('/api/groups', {
+      method: 'DELETE',
+    });
+  }
+
   // =========================
   // 专栏相关 API
   // =========================
@@ -679,8 +686,21 @@ class ApiClient {
   // 股票舆情分析 API
   // =========================
 
-  async scanStocks(groupId: number | string, force: boolean = false): Promise<{ task_id: string; message: string }> {
-    return this.request(`/api/groups/${groupId}/stock/scan?force=${force}`, { method: 'POST' });
+  async scanStocks(
+    groupId: number | string,
+    options?: {
+      force?: boolean;
+      startDate?: string;
+      endDate?: string;
+    }
+  ): Promise<{ task_id: string; message: string }> {
+    const q = new URLSearchParams();
+    q.append('force', String(!!options?.force));
+    if (options?.startDate && options?.endDate) {
+      q.append('start_date', options.startDate);
+      q.append('end_date', options.endDate);
+    }
+    return this.request(`/api/groups/${groupId}/stock/scan?${q.toString()}`, { method: 'POST' });
   }
 
   async getStockStats(groupId: number | string): Promise<any> {
@@ -705,8 +725,29 @@ class ApiClient {
     return this.request(`/api/groups/${groupId}/stock/mentions?${q}`, { signal });
   }
 
-  async getStockEvents(groupId: number | string, stockCode: string): Promise<StockEventsResponse> {
-    return this.request(`/api/groups/${groupId}/stock/${stockCode}/events`);
+  async getStockEvents(
+    groupId: number | string,
+    stockCode: string,
+    opts?: {
+      refreshRealtime?: boolean;
+      detailMode?: 'fast' | 'full';
+      page?: number;
+      perPage?: number;
+      includeFullText?: boolean;
+    }
+  ): Promise<StockEventsResponse> {
+    const q = new URLSearchParams();
+    if (opts?.refreshRealtime) q.append('refresh_realtime', 'true');
+    if (opts?.detailMode) q.append('detail_mode', opts.detailMode);
+    if (opts?.page) q.append('page', String(opts.page));
+    if (opts?.perPage) q.append('per_page', String(opts.perPage));
+    if (typeof opts?.includeFullText === 'boolean') q.append('include_full_text', String(opts.includeFullText));
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return this.request(`/api/groups/${groupId}/stock/${stockCode}/events${suffix}`);
+  }
+
+  async triggerStockEventsRefresh(groupId: number | string, stockCode: string): Promise<any> {
+    return this.request(`/api/groups/${groupId}/stock/${stockCode}/events/refresh`, { method: 'POST' });
   }
 
   async getStockPrice(groupId: number | string, stockCode: string, days: number = 90): Promise<any> {
@@ -822,7 +863,7 @@ class ApiClient {
       days: String(Math.max(1, Math.ceil(windowHours / 24))),
     });
 
-    const res = await this.request<any>(`/api/global/hot-words?${q.toString()}`);
+    const res = await this.request<any>(`/api/global/correction/hot-words?${q.toString()}`);
 
     // 兼容旧接口：若返回数组则包装成新结构
     if (Array.isArray(res)) {
@@ -891,8 +932,25 @@ class ApiClient {
     return { data: [], total: 0, page: 1, page_size: pageSize };
   }
 
-  async getGlobalStockEvents(stockCode: string): Promise<StockEventsResponse> {
-    return this.request(`/api/global/stock/${stockCode}/events`);
+  async getGlobalStockEvents(stockCode: string, opts?: {
+    refreshRealtime?: boolean;
+    detailMode?: 'fast' | 'full';
+    page?: number;
+    perPage?: number;
+    includeFullText?: boolean;
+  }): Promise<StockEventsResponse> {
+    const q = new URLSearchParams();
+    if (opts?.refreshRealtime) q.append('refresh_realtime', 'true');
+    if (opts?.detailMode) q.append('detail_mode', opts.detailMode);
+    if (opts?.page) q.append('page', String(opts.page));
+    if (opts?.perPage) q.append('per_page', String(opts.perPage));
+    if (typeof opts?.includeFullText === 'boolean') q.append('include_full_text', String(opts.includeFullText));
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return this.request(`/api/global/stock/${stockCode}/events${suffix}`);
+  }
+
+  async triggerGlobalStockEventsRefresh(stockCode: string): Promise<any> {
+    return this.request(`/api/global/stock/${stockCode}/events/refresh`, { method: 'POST' });
   }
 
   async getGlobalSectorHeat(startDate?: string, endDate?: string): Promise<any> {
@@ -950,8 +1008,32 @@ class ApiClient {
     return this.request(`/api/global/topics?${q.toString()}`);
   }
 
-  async scanGlobal(force: boolean = false, excludeNonStock: boolean = false): Promise<any> {
-    return this.request(`/api/global/scan?force=${force}&exclude_non_stock=${excludeNonStock}`, { method: 'POST' });
+  async scanGlobal(
+    force: boolean = false,
+    excludeNonStock: boolean = false,
+    startDate?: string,
+    endDate?: string
+  ): Promise<any> {
+    const params = new URLSearchParams();
+    params.append('force', String(force));
+    params.append('exclude_non_stock', String(excludeNonStock));
+    if (startDate && endDate) {
+      params.append('start_date', startDate);
+      params.append('end_date', endDate);
+    }
+    return this.request(`/api/global/scan?${params.toString()}`, { method: 'POST' });
+  }
+
+  async recalculateGlobalPerformanceRange(
+    startDate: string,
+    endDate: string,
+    force: boolean = true,
+  ): Promise<any> {
+    const params = new URLSearchParams();
+    params.append('start_date', startDate);
+    params.append('end_date', endDate);
+    params.append('force', String(force));
+    return this.request(`/api/global/correction/range-recalc?${params.toString()}`, { method: 'POST' });
   }
 
   async getGlobalScanFilterConfig(): Promise<any> {
@@ -1081,11 +1163,62 @@ class ApiClient {
     });
   }
 
-  async analyzeGlobalPerformance(force: boolean = false) {
+  async analyzeGlobalPerformance(force: boolean = false, calcWindowDays?: number) {
     const params = new URLSearchParams();
     if (force) params.append('force', 'true');
-    const url = `/api/global/analyze/performance${params.toString() ? '?' + params.toString() : ''}`;
+    if (typeof calcWindowDays === 'number' && Number.isFinite(calcWindowDays) && calcWindowDays > 0) {
+      params.append('calc_window_days', String(Math.floor(calcWindowDays)));
+    }
+    const url = `/api/global/correction/performance${params.toString() ? '?' + params.toString() : ''}`;
     return this.request(url, {
+      method: 'POST',
+    });
+  }
+
+  // ========== 行情源配置与探活 ==========
+  async getMarketDataProviders(): Promise<any> {
+    return this.request('/api/market-data/providers');
+  }
+
+  async updateMarketDataProviders(payload: {
+    providers: string[];
+    realtime_providers: string[];
+    realtime_provider_failover_enabled: boolean;
+    provider_failover_enabled: boolean;
+    provider_circuit_breaker_seconds: number;
+    sync_retry_max: number;
+    sync_retry_backoff_seconds: number;
+    sync_failure_cooldown_seconds: number;
+    tushare_token?: string;
+  }): Promise<any> {
+    return this.request('/api/market-data/providers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async probeMarketDataProviders(payload: {
+    providers?: string[];
+    symbol?: string;
+  } = {}): Promise<any> {
+    return this.request('/api/market-data/providers/probe', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async bootstrapMarketData(payload: {
+    resume?: boolean;
+    symbol_limit?: number;
+    confirm?: boolean;
+  } = {}): Promise<any> {
+    const params = new URLSearchParams();
+    params.set('resume', String(payload.resume ?? true));
+    params.set('confirm', String(payload.confirm ?? false));
+    if (payload.symbol_limit && payload.symbol_limit > 0) {
+      params.set('symbol_limit', String(payload.symbol_limit));
+    }
+    return this.request(`/api/market-data/bootstrap?${params.toString()}`, {
       method: 'POST',
     });
   }

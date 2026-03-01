@@ -56,6 +56,12 @@ const getPastDate = (days: number) => {
     d.setDate(d.getDate() - days);
     return format(d, 'yyyy-MM-dd');
 };
+const getPastDateFrom = (baseDate: string, days: number) => {
+    const d = new Date(baseDate);
+    if (Number.isNaN(d.getTime())) return getPastDate(days);
+    d.setDate(d.getDate() - days);
+    return format(d, 'yyyy-MM-dd');
+};
 
 /* ────────── Time Range Picker Component ────────── */
 function TimeRangePicker({
@@ -270,12 +276,16 @@ export default function StockDashboard({
     const [groupMetaMap, setGroupMetaMap] = useState<Record<string, any>>({});
     const [featureFlags, setFeatureFlags] = useState<Record<string, any>>({});
     const [lastError, setLastError] = useState<string | null>(null);
+    const [anchorDate, setAnchorDate] = useState<string>('');
+    const anchorInitRef = useRef(false);
 
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(false);
     const [scanTaskId, setScanTaskId] = useState<string | null>(null);
     const [showTaskLog, setShowTaskLog] = useState(false);
     const [deletingGroupId, setDeletingGroupId] = useState<number | null>(null);
+    const [scanStartDate, setScanStartDate] = useState<string>('');
+    const [scanEndDate, setScanEndDate] = useState<string>('');
 
     const [mentionPage, setMentionPage] = useState(1);
     const [mentionTotal, setMentionTotal] = useState(0);
@@ -319,6 +329,32 @@ export default function StockDashboard({
     const mentionsAbortRef = useRef<AbortController | null>(null);
     const VIEW_CACHE_TTL_MS = 60_000;
     const viewCacheRef = useRef<Record<string, { ts: number; key: string; payload: any }>>({});
+    const clampDateToAnchor = useCallback((date: string): string => {
+        if (!anchorDate || !date) return date;
+        return date > anchorDate ? anchorDate : date;
+    }, [anchorDate]);
+
+    const withAnchorEndSetter = useCallback((setter: (v: string) => void, msgPrefix: string) => {
+        return (next: string) => {
+            if (anchorDate && next && next > anchorDate) {
+                toast.info(`${msgPrefix}已自动裁剪到已固化日期 ${anchorDate}`);
+                setter(anchorDate);
+                return;
+            }
+            setter(next);
+        };
+    }, [anchorDate]);
+
+    const withAnchorStartSetter = useCallback((setter: (v: string) => void, msgPrefix: string) => {
+        return (next: string) => {
+            if (anchorDate && next && next > anchorDate) {
+                toast.info(`${msgPrefix}起始日期已自动裁剪到已固化日期 ${anchorDate}`);
+                setter(anchorDate);
+                return;
+            }
+            setter(next);
+        };
+    }, [anchorDate]);
 
     // AI analysis state
     const [aiConfig, setAiConfig] = useState<any>(null);
@@ -448,11 +484,34 @@ export default function StockDashboard({
             const s = isGlobal ? await apiClient.getGlobalStats() : await apiClient.getStockStats(groupId!);
             console.log('[StockDashboard] Stats loaded:', s);
             setStats(s);
+            const nextAnchor = String(s?._meta?.anchor_date || '').trim();
+            if (nextAnchor) {
+                setAnchorDate(nextAnchor);
+                if (!anchorInitRef.current) {
+                    setWinRateEnd(nextAnchor);
+                    setSectorEnd(nextAnchor);
+                    setSignalEnd(nextAnchor);
+                    setWinRateStart(getPastDateFrom(nextAnchor, 30));
+                    setSectorStart(getPastDateFrom(nextAnchor, 30));
+                    setSignalStart(getPastDateFrom(nextAnchor, 30));
+                    anchorInitRef.current = true;
+                }
+            }
         } catch (err: any) {
             console.error('[StockDashboard] Failed to load stats:', err);
             setLastError(err.message || 'Failed to load stats');
         }
     }, [groupId, isGlobal]);
+
+    useEffect(() => {
+        if (!anchorDate) return;
+        setWinRateEnd(prev => clampDateToAnchor(prev));
+        setSectorEnd(prev => clampDateToAnchor(prev));
+        setSignalEnd(prev => clampDateToAnchor(prev));
+        setWinRateStart(prev => clampDateToAnchor(prev));
+        setSectorStart(prev => clampDateToAnchor(prev));
+        setSignalStart(prev => clampDateToAnchor(prev));
+    }, [anchorDate, clampDateToAnchor]);
 
     const loadMentions = useCallback(async () => {
         mentionsAbortRef.current?.abort();
@@ -727,13 +786,28 @@ export default function StockDashboard({
 
     /* ── scan ── */
     const handleScan = async (force = false) => {
+        const hasStart = !!scanStartDate;
+        const hasEnd = !!scanEndDate;
+        if ((hasStart && !hasEnd) || (!hasStart && hasEnd)) {
+            toast.error('请同时选择开始和结束日期');
+            return;
+        }
+        if (hasStart && hasEnd && scanStartDate > scanEndDate) {
+            toast.error('开始日期不能晚于结束日期');
+            return;
+        }
+
         setScanning(true);
         setShowTaskLog(true);
         viewCacheRef.current = {};
         try {
             const res = isGlobal
-                ? await apiClient.scanGlobal(force)
-                : await apiClient.scanStocks(groupId!, force);
+                ? await apiClient.scanGlobal(force, false, scanStartDate || undefined, scanEndDate || undefined)
+                : await apiClient.scanStocks(groupId!, {
+                    force,
+                    startDate: scanStartDate || undefined,
+                    endDate: scanEndDate || undefined,
+                });
 
             setScanTaskId(res.task_id);
             if (onTaskCreated) {
@@ -927,22 +1001,54 @@ export default function StockDashboard({
             <div className="flex flex-col gap-3">
                 {/* Row 1: Scan Actions (if any) */}
                 {!hideScanActions && (
-                    <div className="flex items-center gap-2">
-                        <Button
-                            size="sm"
-                            variant="default"
-                            onClick={() => handleScan(false)}
-                            disabled={scanning}
-                            className="gap-1.5"
-                        >
-                            {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                            {scanning ? '分析中...' : '开始数据分析'}
-                        </Button>
-                        {(scanning || scanTaskId) && (
-                            <Button size="sm" variant="outline" onClick={() => setShowTaskLog(!showTaskLog)}>
-                                {showTaskLog ? '隐藏日志' : '查看日志'}
+                    <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">重算范围</span>
+                            <Input
+                                type="date"
+                                value={scanStartDate}
+                                onChange={(e) => setScanStartDate(e.target.value)}
+                                className="h-8 text-xs w-[160px]"
+                                disabled={scanning}
+                            />
+                            <span className="text-xs text-muted-foreground">~</span>
+                            <Input
+                                type="date"
+                                value={scanEndDate}
+                                onChange={(e) => setScanEndDate(e.target.value)}
+                                className="h-8 text-xs w-[160px]"
+                                disabled={scanning}
+                            />
+                            <span className="text-[11px] text-muted-foreground">
+                                留空为全量
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => handleScan(false)}
+                                disabled={scanning}
+                                className="gap-1.5"
+                            >
+                                {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                                {scanning ? '分析中...' : '开始数据分析'}
                             </Button>
-                        )}
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleScan(true)}
+                                disabled={scanning}
+                                className="gap-1.5"
+                            >
+                                强制重算
+                            </Button>
+                            {(scanning || scanTaskId) && (
+                                <Button size="sm" variant="outline" onClick={() => setShowTaskLog(!showTaskLog)}>
+                                    {showTaskLog ? '隐藏日志' : '查看日志'}
+                                </Button>
+                            )}
+                        </div>
                     </div>
                 )}
 
@@ -1350,6 +1456,11 @@ export default function StockDashboard({
                                     </SelectContent>
                                 </Select>
                                 <span className="text-[11px] text-muted-foreground">当前门槛会影响可见股票数量</span>
+                                {anchorDate && (
+                                    <Badge variant="outline" className="h-6 text-[10px] px-2">
+                                        数据截至: {anchorDate} (已固化)
+                                    </Badge>
+                                )}
                             </div>
 
                             <TimeRangePicker
@@ -1357,8 +1468,8 @@ export default function StockDashboard({
                                 start={winRateStart}
                                 end={winRateEnd}
                                 onRangeChange={setWinRateRange}
-                                onStartChange={setWinRateStart}
-                                onEndChange={setWinRateEnd}
+                                onStartChange={withAnchorStartSetter(setWinRateStart, '胜率区间')}
+                                onEndChange={withAnchorEndSetter(setWinRateEnd, '胜率区间')}
                             />
                         </div>
 
@@ -1530,13 +1641,18 @@ export default function StockDashboard({
                     <div className="space-y-3">
                         <div className="flex justify-between items-center">
                             <h3 className="text-sm font-medium">板块热度</h3>
+                            {anchorDate && (
+                                <Badge variant="outline" className="h-6 text-[10px] px-2 mr-2">
+                                    数据截至: {anchorDate} (已固化)
+                                </Badge>
+                            )}
                             <TimeRangePicker
                                 range={sectorRange}
                                 start={sectorStart}
                                 end={sectorEnd}
                                 onRangeChange={setSectorRange}
-                                onStartChange={setSectorStart}
-                                onEndChange={setSectorEnd}
+                                onStartChange={withAnchorStartSetter(setSectorStart, '板块区间')}
+                                onEndChange={withAnchorEndSetter(setSectorEnd, '板块区间')}
                             />
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1590,14 +1706,19 @@ export default function StockDashboard({
                                         <SelectItem value="10">10次</SelectItem>
                                     </SelectContent>
                                 </Select>
+                                {anchorDate && (
+                                    <Badge variant="outline" className="h-6 text-[10px] px-2">
+                                        数据截至: {anchorDate} (已固化)
+                                    </Badge>
+                                )}
                             </div>
                             <TimeRangePicker
                                 range={signalRange}
                                 start={signalStart}
                                 end={signalEnd}
                                 onRangeChange={setSignalRange}
-                                onStartChange={setSignalStart}
-                                onEndChange={setSignalEnd}
+                                onStartChange={withAnchorStartSetter(setSignalStart, '信号区间')}
+                                onEndChange={withAnchorEndSetter(setSignalEnd, '信号区间')}
                             />
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
